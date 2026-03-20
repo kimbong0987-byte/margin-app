@@ -4,6 +4,9 @@ import Select from 'react-select';
 import { supabase } from './supabaseClient'; 
 
 function App() {
+  // ==========================================
+  // 1. 상태 관리
+  // ==========================================
   const [activeMenu, setActiveMenu] = useState('list');
   const [masterProducts, setMasterProducts] = useState([]);
   const [groups, setGroups] = useState([]);
@@ -28,11 +31,19 @@ function App() {
   const [editingCode, setEditingCode] = useState(null);
   const [editRow, setEditRow] = useState({});
 
-  const [tempChild, setTempChild] = useState({ brand: '', season: '', category: '', 품번코드: '', 스타일넘버: '', 상품명: '', 원가: '', tag가: '' });
-  const [groupInput, setGroupInput] = useState({ brand: '', season: '', type: '묶음', category: '', groupCode: '', styleNo: '', groupName: '', cost: '', tagPrice: '', children: [] });
+  const [tempChild, setTempChild] = useState({ 
+    brand: '', season: '', category: '', 품번코드: '', 스타일넘버: '', 상품명: '', 원가: '', tag가: '' 
+  });
+  const [groupInput, setGroupInput] = useState({ 
+    brand: '', season: '', type: '묶음', category: '', groupCode: '', styleNo: '', groupName: '', cost: '', tagPrice: '', children: [] 
+  });
 
+  // 🌟 모바일 감지 상태
   const [isMobile, setIsMobile] = useState(window.innerWidth <= 768);
 
+  // ==========================================
+  // 2. 초기 데이터 로드 & 화면 크기 감지
+  // ==========================================
   useEffect(() => { 
     fetchData(); 
     const handleResize = () => setIsMobile(window.innerWidth <= 768);
@@ -47,34 +58,38 @@ function App() {
       const { data: seaData } = await supabase.from('seasons').select('*').order('name');
       const { data: prodData } = await supabase.from('master_products').select('*');
       const { data: groupData } = await supabase.from('groups').select('*');
+      
       if (catData) setCategories(catData.map(c => c.name));
       if (brdData) setBrands(brdData.map(b => b.name));
       if (seaData) setSeasons(seaData.map(s => s.name));
       if (prodData) setMasterProducts(prodData);
       if (groupData) setGroups(groupData);
-    } catch (e) { console.error("데이터 로드 실패", e); }
+    } catch (e) { 
+      console.error("데이터 로드 실패:", e); 
+    }
   };
 
+  // ==========================================
+  // 3. 유틸리티 및 데이터 가공
+  // ==========================================
   const handleSort = (key) => {
     let direction = 'asc';
     if (sortConfig.key === key && sortConfig.direction === 'asc') direction = 'desc';
     setSortConfig({ key, direction });
   };
 
-  const calcDiscount = (p, t) => {
-    const pp = Number(p || 0); const tt = Number(t || 0);
-    return tt === 0 ? 0 : Math.round((1 - (pp / tt)) * 100);
-  };
-
-  const getDiffColor = (o, c) => {
-    const oo = Number(o || 0); const cc = Number(c || 0);
-    if (!cc || oo === cc) return 'inherit';
-    return cc > oo ? '#2980b9' : '#e74c3c'; 
+  const getDiffColor = (original, current) => {
+    const orig = Number(original || 0); const curr = Number(current || 0);
+    if (!curr || orig === curr) return 'inherit';
+    return curr > orig ? '#2980b9' : '#e74c3c'; 
   };
 
   const handleSelectAll = (e) => {
-    if (e.target.checked) setSelectedCodes(getProcessedData().filter(i => !i.isGhost).map(item => item.code));
-    else setSelectedCodes([]);
+    if (e.target.checked) {
+      setSelectedCodes(getProcessedData().filter(i => !i.isGhost).map(item => item.code));
+    } else {
+      setSelectedCodes([]);
+    }
   };
 
   const getProcessedData = () => {
@@ -86,45 +101,105 @@ function App() {
       const matchSearch = term === '' || (String(item.code || "") + String(item.style_no || "") + String(item.name || "")).toLowerCase().includes(term);
       return matchCat && matchBrand && matchSeason && matchSearch;
     };
-    const mGroups = groups.filter(isMatch).map(g => ({ ...g, type: g.type || '묶음' }));
-    const mSingles = masterProducts.filter(isMatch).map(p => ({ ...p, type: '단품' }));
-    const mCodes = new Set();
-    mGroups.forEach(g => { if (g.children) g.children.forEach(c => mCodes.add(c.code)); });
-    const standalone = mSingles.filter(s => !mCodes.has(s.code));
-    let top = [...mGroups, ...standalone];
-    top.sort((a, b) => {
-      let vA = a[sortConfig.key]; let vB = b[sortConfig.key];
-      if (['cost', 'tag_price', 'price_sale', 'margin'].includes(sortConfig.key)) { vA = Number(vA || 0); vB = Number(vB || 0); }
-      else { vA = String(vA || "").toLowerCase(); vB = String(vB || "").toLowerCase(); }
-      return sortConfig.direction === 'asc' ? (vA < vB ? -1 : 1) : (vA > vB ? -1 : 1);
+
+    const matchedGroups = groups.filter(isMatch).map(g => ({ ...g, type: g.type || '묶음' }));
+    const matchedSingles = masterProducts.filter(isMatch).map(p => ({ ...p, type: '단품' }));
+
+    const matchedMappedCodes = new Set();
+    matchedGroups.forEach(g => {
+      if (g.children) {
+        g.children.forEach(c => matchedMappedCodes.add(c.code));
+      }
     });
-    const res = []; const rendered = new Set();
-    top.forEach(item => {
-      res.push(item);
+
+    const standaloneSingles = matchedSingles.filter(s => !matchedMappedCodes.has(s.code));
+
+    let topLevel = [...matchedGroups, ...standaloneSingles];
+    topLevel.sort((a, b) => {
+      let vA = a[sortConfig.key]; let vB = b[sortConfig.key];
+      if (['cost', 'tag_price', 'price_sale', 'margin'].includes(sortConfig.key)) { 
+        vA = Number(vA || 0); vB = Number(vB || 0); 
+      } else { 
+        vA = String(vA || "").toLowerCase(); vB = String(vB || "").toLowerCase(); 
+      }
+      if (vA < vB) return sortConfig.direction === 'asc' ? -1 : 1;
+      if (vA > vB) return sortConfig.direction === 'asc' ? 1 : -1;
+      return 0;
+    });
+
+    const expandedResult = [];
+    const renderedChildCodes = new Set();
+
+    topLevel.forEach(item => {
+      expandedResult.push(item);
       if ((item.type === '묶음' || item.type === '세트') && item.children) {
-        item.children.forEach(cSnap => {
-          const live = masterProducts.find(p => p.code === cSnap.code) || cSnap;
-          const isG = rendered.has(live.code);
-          res.push({ ...live, brand: live.brand||item.brand, season: live.season||item.season, category: live.category||item.category, type: 'ㄴ 구성', isMappedChild: true, parentCode: item.code, isGhost: isG });
-          if (!isG) rendered.add(live.code);
+        item.children.forEach(childSnapshot => {
+          const liveChild = masterProducts.find(p => p.code === childSnapshot.code) || childSnapshot;
+          const isGhost = renderedChildCodes.has(liveChild.code);
+          
+          expandedResult.push({ 
+            ...liveChild,
+            brand: liveChild.brand || item.brand,
+            season: liveChild.season || item.season,
+            category: liveChild.category || item.category,
+            type: 'ㄴ 구성', 
+            isMappedChild: true, 
+            parentCode: item.code,
+            isGhost: isGhost 
+          });
+
+          if (!isGhost) {
+            renderedChildCodes.add(liveChild.code);
+          }
         });
       }
     });
-    return res.map(item => {
-      const c = Number(item.cost || 0); const t = Number(item.tag_price || 0); const s = Number(item.price_sale || 0); 
-      const fee = Math.floor(s * 0.18); const set = s - fee; const m = set - c - 5000;
-      const pS = Number(item.prev_sale || item.price_sale || 0);
-      const pM = (pS - Math.floor(pS * 0.18)) - c - 5000;
-      return { ...item, fee, settle: set, margin: m, prevMargin: pM, ratio: c > 0 ? (s / c).toFixed(1) : "0.0", discSale: calcDiscount(s, t) };
+
+    return expandedResult.map(item => {
+      const cost = Number(item.cost || 0); 
+      const tag = Number(item.tag_price || 0);
+      const sale = Number(item.price_sale || 0); 
+      const fee = Math.floor(sale * 0.18); 
+      const settle = sale - fee; 
+      const margin = settle - cost - 5000;
+      const pSale = Number(item.prev_sale || item.price_sale || 0);
+      const pMargin = (pSale - Math.floor(pSale * 0.18)) - cost - 5000;
+      const discSale = tag === 0 ? 0 : Math.round((1 - (sale / tag)) * 100);
+      
+      return { 
+        ...item, fee, settle, margin, prevMargin: pMargin, 
+        ratio: cost > 0 ? (sale / cost).toFixed(1) : "0.0", discSale 
+      };
     });
   };
 
-  const addCategory = async () => { if(!newCatInput.trim()) return; await supabase.from('categories').insert([{name: newCatInput}]); setNewCatInput(''); fetchData(); };
-  const deleteCategory = async (n) => { if(window.confirm(`${n} 삭제?`)) { await supabase.from('categories').delete().eq('name',n); fetchData(); } };
-  const addBrand = async () => { if(!newBrandInput.trim()) return; await supabase.from('brands').insert([{name: newBrandInput}]); setNewBrandInput(''); fetchData(); };
-  const deleteBrand = async (n) => { if(window.confirm(`${n} 삭제?`)) { await supabase.from('brands').delete().eq('name',n); fetchData(); } };
-  const addSeason = async () => { if(!newSeasonInput.trim()) return; await supabase.from('seasons').insert([{name: newSeasonInput}]); setNewSeasonInput(''); fetchData(); };
-  const deleteSeason = async (n) => { if(window.confirm(`${n} 삭제?`)) { await supabase.from('seasons').delete().eq('name',n); fetchData(); } };
+  // ==========================================
+  // 4. 추가/삭제/저장 함수
+  // ==========================================
+  const addCategory = async () => { 
+    if(!newCatInput.trim()) return; 
+    await supabase.from('categories').insert([{name: newCatInput}]); 
+    setNewCatInput(''); fetchData(); 
+  };
+  const deleteCategory = async (n) => { 
+    if(window.confirm(`[${n}] 삭제하시겠습니까?`)) { await supabase.from('categories').delete().eq('name',n); fetchData(); } 
+  };
+  const addBrand = async () => { 
+    if(!newBrandInput.trim()) return; 
+    await supabase.from('brands').insert([{name: newBrandInput}]); 
+    setNewBrandInput(''); fetchData(); 
+  };
+  const deleteBrand = async (n) => { 
+    if(window.confirm(`[${n}] 삭제하시겠습니까?`)) { await supabase.from('brands').delete().eq('name',n); fetchData(); } 
+  };
+  const addSeason = async () => { 
+    if(!newSeasonInput.trim()) return; 
+    await supabase.from('seasons').insert([{name: newSeasonInput}]); 
+    setNewSeasonInput(''); fetchData(); 
+  };
+  const deleteSeason = async (n) => { 
+    if(window.confirm(`[${n}] 삭제하시겠습니까?`)) { await supabase.from('seasons').delete().eq('name',n); fetchData(); } 
+  };
 
   const handleRegisterMaster = async () => {
     await supabase.from('master_products').upsert([{ 
@@ -132,7 +207,9 @@ function App() {
       code: tempChild.품번코드, style_no: tempChild.스타일넘버, name: tempChild.상품명, 
       cost: Number(tempChild.원가 || 0), tag_price: Number(tempChild.tag가 || 0) 
     }], { onConflict: 'code' });
-    alert("저장 완료"); setTempChild({ brand: '', season: '', category: '', 품번코드: '', 스타일넘버: '', 상품명: '', 원가: '', tag가: '' }); fetchData();
+    alert("✅ 저장 완료"); 
+    setTempChild({ brand: '', season: '', category: '', 품번코드: '', 스타일넘버: '', 상품명: '', 원가: '', tag가: '' }); 
+    fetchData();
   };
 
   const handleSaveGroup = async () => {
@@ -141,7 +218,9 @@ function App() {
       code: groupInput.groupCode, style_no: groupInput.styleNo, name: groupInput.groupName, 
       cost: Number(groupInput.cost || 0), tag_price: Number(groupInput.tagPrice || 0), children: groupInput.children 
     }]);
-    alert("그룹 저장 완료"); setGroupInput({ brand: '', season: '', type: '묶음', category: '', groupCode: '', styleNo: '', groupName: '', cost: '', tagPrice: '', children: [] }); fetchData();
+    alert("✅ 그룹 저장 완료"); 
+    setGroupInput({ brand: '', season: '', type: '묶음', category: '', groupCode: '', styleNo: '', groupName: '', cost: '', tagPrice: '', children: [] }); 
+    fetchData();
   };
 
   const saveEdit = async (item) => {
@@ -153,11 +232,12 @@ function App() {
       price_gold: Number(editRow.price_gold||0), price_sale: Number(editRow.price_sale || 0),
       prev_naver: Number(item.price_naver || 0), prev_sale: Number(item.price_sale || 0)
     }).eq('code', editingCode);
-    setEditingCode(null); fetchData();
+    setEditingCode(null); 
+    fetchData();
   };
 
   const handleBatchUpdate = async () => {
-    if (!selectedCodes.length) return alert("선택된 상품 없음");
+    if (!selectedCodes.length) return alert("선택된 상품이 없습니다.");
     const up = {};
     if (batchInput.cost) up.cost = Number(batchInput.cost);
     if (batchInput.tagPrice) up.tag_price = Number(batchInput.tagPrice);
@@ -171,28 +251,37 @@ function App() {
       supabase.from('groups').update(up).in('code', selectedCodes),
       supabase.from('master_products').update(up).in('code', selectedCodes)
     ]);
-    alert("일괄 변경 완료"); setSelectedCodes([]); fetchData();
+    alert("✅ 일괄 변경 완료"); 
+    setSelectedCodes([]); 
+    fetchData();
   };
 
   const handleBatchDelete = async () => {
-    if (!selectedCodes.length || !window.confirm("정말 삭제하시겠습니까?")) return;
+    if (!selectedCodes.length || !window.confirm("⚠️ 정말 삭제하시겠습니까?")) return;
     const gDel = groups.filter(g => selectedCodes.includes(g.code)).map(g => g.code);
     const mDel = masterProducts.filter(p => selectedCodes.includes(p.code)).map(p => p.code);
+    
     if (gDel.length) await supabase.from('groups').delete().in('code', gDel);
     if (mDel.length) await supabase.from('master_products').delete().in('code', mDel);
-    alert("삭제 완료"); setSelectedCodes([]); fetchData();
+    
+    alert("✅ 삭제 완료"); 
+    setSelectedCodes([]); 
+    fetchData();
   };
 
   const downloadListExcel = () => {
     let src = getProcessedData().filter(i => !i.isGhost);
     if (selectedCodes.length) src = src.filter(i => selectedCodes.includes(i.code));
+    
     const ws = XLSX.utils.json_to_sheet(src.map(i => ({ "품번": i.code, "상품명": i.name, "원가": i.cost, "행사가": i.price_sale })));
-    const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, "Sheet1");
+    const wb = XLSX.utils.book_new(); 
+    XLSX.utils.book_append_sheet(wb, ws, "Sheet1");
     XLSX.writeFile(wb, "MD_LineSheet.xlsx");
   };
 
   const handleListExcelUpload = async (e) => {
-    const file = e.target.files[0]; if(!file) return;
+    const file = e.target.files[0]; 
+    if(!file) return;
     const reader = new FileReader();
     reader.onload = async (ev) => {
       const rows = XLSX.utils.sheet_to_json(XLSX.read(ev.target.result, {type:'binary'}).Sheets[XLSX.read(ev.target.result, {type:'binary'}).SheetNames[0]]);
@@ -201,7 +290,8 @@ function App() {
         const tbl = groups.some(g=>g.code===c) ? 'groups' : 'master_products';
         await supabase.from(tbl).update({ cost: Number(r["원가"]||0), price_sale: Number(r["행사가"]||0) }).eq('code', c);
       }
-      alert("업로드 완료"); fetchData();
+      alert("✅ 업로드 완료"); 
+      fetchData();
     };
     reader.readAsBinaryString(file);
   };
@@ -209,10 +299,14 @@ function App() {
   const downloadExcelTemplate = () => {
     const templateData = [{ "브랜드": "몽벨", "시즌": "24SS", "복종": "상의", "품번": "TS-100", "스타일": "ST-01", "상품명": "기본 티셔츠", "원가": 5000, "Tag가": 20000 }];
     const ws = XLSX.utils.json_to_sheet(templateData);
-    const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, "양식"); 
+    const wb = XLSX.utils.book_new(); 
+    XLSX.utils.book_append_sheet(wb, ws, "양식"); 
     XLSX.writeFile(wb, "MD_상품등록양식.xlsx");
   };
 
+  // ==========================================
+  // 5. 레이아웃 & 스타일 정의
+  // ==========================================
   const PRIMARY_COLOR = '#3498db';
   const GHOST_COLOR = '#bdc3c7'; 
 
@@ -241,6 +335,8 @@ function App() {
   };
   
   const cellS = (c) => ({ width: `${c.w}px`, minWidth: `${c.w}px`, maxWidth: `${c.w}px` });
+  
+  const inputRegStyle = { padding: '8px', border: '1px solid #ddd', borderRadius: '6px', width: '100%', boxSizing: 'border-box', marginBottom: '10px' };
   const batchInputStyle = { width: isMobile ? '45px' : '55px', fontSize: '10px', padding: '4px', border: '1px solid #ccc', borderRadius: '3px' };
   const btnStyle = { padding:'2px 4px', background:'#eee', border:'1px solid #ccc', borderRadius:'3px', fontSize:'10px', cursor:'pointer' };
   const compareInputStyle = { width: '50px', fontSize: '10px', padding: '2px', border: '1px solid #3498db', borderRadius: '2px' };
@@ -262,6 +358,7 @@ function App() {
   return (
     <div style={{ display: 'flex', flexDirection: isMobile ? 'column' : 'row', minHeight: '100vh', width: '100vw', backgroundColor: '#f4f7f6', position: 'absolute', top: 0, left: 0, overflow: 'hidden' }}>
       
+      {/* ⬅️ 네비게이션 */}
       <div style={sidebarStyle}>
         {!isMobile && <h2 style={{ color: PRIMARY_COLOR, fontSize: '0.7rem', marginBottom: '30px', textAlign: 'center' }}>LINE<br/>SHEET</h2>}
         <div onClick={() => setActiveMenu('register')} style={miniMenuStyle(activeMenu === 'register')}><span style={{fontWeight:'bold'}}>1</span><span style={{fontSize:'10px'}}>상품등록</span></div>
@@ -270,6 +367,7 @@ function App() {
 
       <div style={mainContentStyle}>
         
+        {/* ======================= [ 메뉴 1: 상품 등록 ] ======================= */}
         {activeMenu === 'register' && (
           <div style={{ width: '100%' }}>
             <h2 style={{ marginBottom: '20px', fontSize: isMobile ? '1.2rem' : '1.5rem' }}>💎 상품 통합 등록</h2>
@@ -277,44 +375,51 @@ function App() {
             <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr 1fr', gap: '15px', marginBottom: '20px' }}>
               <div style={{ background: '#fff', padding: '15px', borderRadius: '12px', borderLeft: `5px solid #e17055`, boxShadow: '0 4px 10px rgba(0,0,0,0.05)' }}>
                  <strong>🏷️ 브랜드 설정</strong>
-                 <input placeholder="새 브랜드 + 엔터" value={newBrandInput} onChange={e => setNewBrandInput(e.target.value)} onKeyDown={e => e.key === 'Enter' && addBrand()} style={{padding:'6px', width:'100%', border:'1px solid #ddd', marginTop:'10px', borderRadius:'6px', boxSizing:'border-box'}} />
-                 <div style={{ display: 'flex', gap: '4px', marginTop:'10px', flexWrap:'wrap' }}>
+                 <input placeholder="새 브랜드 + 엔터" value={newBrandInput} onChange={e => setNewBrandInput(e.target.value)} onKeyDown={e => e.key === 'Enter' && addBrand()} style={inputRegStyle} />
+                 <div style={{ display: 'flex', gap: '4px', flexWrap:'wrap' }}>
                    {brands.map(b => <span key={b} style={{background:'#fcf0ed', padding:'4px 8px', borderRadius:'15px', fontSize:'11px'}}>{b} <b onClick={()=>deleteBrand(b)} style={{color:'red', cursor:'pointer', marginLeft:'4px'}}>×</b></span>)}
                  </div>
               </div>
               <div style={{ background: '#fff', padding: '15px', borderRadius: '12px', borderLeft: `5px solid #0984e3`, boxShadow: '0 4px 10px rgba(0,0,0,0.05)' }}>
                  <strong>❄️ 시즌 설정</strong>
-                 <input placeholder="새 시즌 + 엔터" value={newSeasonInput} onChange={e => setNewSeasonInput(e.target.value)} onKeyDown={e => e.key === 'Enter' && addSeason()} style={{padding:'6px', width:'100%', border:'1px solid #ddd', marginTop:'10px', borderRadius:'6px', boxSizing:'border-box'}} />
-                 <div style={{ display: 'flex', gap: '4px', marginTop:'10px', flexWrap:'wrap' }}>
+                 <input placeholder="새 시즌 + 엔터" value={newSeasonInput} onChange={e => setNewSeasonInput(e.target.value)} onKeyDown={e => e.key === 'Enter' && addSeason()} style={inputRegStyle} />
+                 <div style={{ display: 'flex', gap: '4px', flexWrap:'wrap' }}>
                    {seasons.map(s => <span key={s} style={{background:'#eef6fc', padding:'4px 8px', borderRadius:'15px', fontSize:'11px'}}>{s} <b onClick={()=>deleteSeason(s)} style={{color:'red', cursor:'pointer', marginLeft:'4px'}}>×</b></span>)}
                  </div>
               </div>
               <div style={{ background: '#fff', padding: '15px', borderRadius: '12px', borderLeft: `5px solid ${PRIMARY_COLOR}`, boxShadow: '0 4px 10px rgba(0,0,0,0.05)' }}>
                  <strong>📁 복종 설정</strong>
-                 <input placeholder="새 복종 + 엔터" value={newCatInput} onChange={e => setNewCatInput(e.target.value)} onKeyDown={e => e.key === 'Enter' && addCategory()} style={{padding:'6px', width:'100%', border:'1px solid #ddd', marginTop:'10px', borderRadius:'6px', boxSizing:'border-box'}} />
-                 <div style={{ display: 'flex', gap: '4px', marginTop:'10px', flexWrap:'wrap' }}>
+                 <input placeholder="새 복종 + 엔터" value={newCatInput} onChange={e => setNewCatInput(e.target.value)} onKeyDown={e => e.key === 'Enter' && addCategory()} style={inputRegStyle} />
+                 <div style={{ display: 'flex', gap: '4px', flexWrap:'wrap' }}>
                    {categories.map(c => <span key={c} style={{background:'#ebf3f9', padding:'4px 8px', borderRadius:'15px', fontSize:'11px'}}>{c} <b onClick={()=>deleteCategory(c)} style={{color:'red', cursor:'pointer', marginLeft:'4px'}}>×</b></span>)}
                  </div>
               </div>
             </div>
 
             <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: '20px' }}>
+              
+              {/* --- 단품 등록 영역 --- */}
               <div style={{ background: '#fff', padding: '20px', borderRadius: '12px', borderLeft: `5px solid #00cec9`, boxShadow: '0 4px 10px rgba(0,0,0,0.05)' }}>
                 <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'15px' }}>
                   <h3 style={{color:'#00cec9', margin:0, fontSize: isMobile?'1rem':'1.17em'}}>📋 1. 단품 마스터 등록</h3>
                   <button onClick={downloadExcelTemplate} style={{fontSize:'10px', padding:'5px 8px', cursor:'pointer', borderRadius:'4px'}}>📄 양식 다운</button>
                 </div>
+                
                 <div style={{ marginBottom:'15px', padding:'10px', background:'#f8f9fa', border:'1px dashed #ccc', borderRadius:'8px', display:'flex', gap:'5px', alignItems: 'center' }}>
                    <input type="file" onChange={(e)=>setSelectedFile(e.target.files[0])} style={{fontSize:'11px', flex:1}}/>
                    <button onClick={handleExcelUpload} style={{fontSize:'11px', background:'#00cec9', color:'#fff', border:'none', borderRadius:'4px', padding:'6px 12px', cursor:'pointer', whiteSpace:'nowrap'}}>업로드</button>
                 </div>
                 
-                {/* 🛡️ 튕김 방지 적용: masterProducts.map */}
-                <Select placeholder="기존 상품 검색 및 수정..." 
-                  options={(masterProducts || []).map(p => ({ label: `[${p?.code || '없음'}] ${p?.name || '없음'}`, data: p }))} 
+                <Select 
+                  placeholder="기존 상품 검색 및 수정..." 
+                  options={(masterProducts || []).map(p => ({ label: `[${p?.code || ''}] ${p?.name || ''}`, data: p }))} 
                   onChange={(opt) => {
                     if(opt && opt.data) {
-                      setTempChild({brand: opt.data.brand || '', season: opt.data.season || '', category: opt.data.category || '', 품번코드: opt.data.code || '', 스타일넘버: opt.data.style_no || '', 상품명: opt.data.name || '', 원가: opt.data.cost || '', tag가: opt.data.tag_price || ''});
+                      setTempChild({
+                        brand: opt.data.brand || '', season: opt.data.season || '', category: opt.data.category || '', 
+                        품번코드: opt.data.code || '', 스타일넘버: opt.data.style_no || '', 상품명: opt.data.name || '', 
+                        원가: opt.data.cost || '', tag가: opt.data.tag_price || ''
+                      });
                     }
                   }} 
                 />
@@ -328,36 +433,47 @@ function App() {
                      <select value={tempChild.category} onChange={e=>setTempChild({...tempChild, category:e.target.value})} style={{padding:'8px', flex:1, borderRadius:'6px', border:'1px solid #ddd'}}><option value="">복종</option>{categories.map(c=><option key={c} value={c}>{c}</option>)}</select>
                      <input placeholder="품번코드 (필수)" value={tempChild.품번코드} onChange={e=>setTempChild({...tempChild, 품번코드:e.target.value})} style={{padding:'8px', flex:1, borderRadius:'6px', border:'1px solid #ddd', boxSizing:'border-box'}} />
                    </div>
-                   <input placeholder="스타일넘버" value={tempChild.스타일넘버} onChange={e=>setTempChild({...tempChild, 스타일넘버:e.target.value})} style={{padding: '8px', border: '1px solid #ddd', borderRadius: '6px', width: '100%', boxSizing: 'border-box', marginBottom: '10px'}} />
-                   <input placeholder="상품명 (필수)" value={tempChild.상품명} onChange={e=>setTempChild({...tempChild, 상품명:e.target.value})} style={{padding: '8px', border: '1px solid #ddd', borderRadius: '6px', width: '100%', boxSizing: 'border-box', marginBottom: '10px'}} />
-                   <div style={{display:'flex', gap:'5px'}}><input type="number" placeholder="원가" value={tempChild.원가} onChange={e=>setTempChild({...tempChild, 원가:e.target.value})} style={{padding:'8px', flex:1, borderRadius:'6px', border:'1px solid #ddd'}} /><input type="number" placeholder="Tag가" value={tempChild.tag가} onChange={e=>setTempChild({...tempChild, tag가:e.target.value})} style={{padding:'8px', flex:1, borderRadius:'6px', border:'1px solid #ddd'}} /></div>
+                   <input placeholder="스타일넘버" value={tempChild.스타일넘버} onChange={e=>setTempChild({...tempChild, 스타일넘버:e.target.value})} style={inputRegStyle} />
+                   <input placeholder="상품명 (필수)" value={tempChild.상품명} onChange={e=>setTempChild({...tempChild, 상품명:e.target.value})} style={inputRegStyle} />
+                   
+                   <div style={{display:'flex', gap:'5px'}}>
+                     <input type="number" placeholder="원가" value={tempChild.원가} onChange={e=>setTempChild({...tempChild, 원가:e.target.value})} style={{padding:'8px', flex:1, borderRadius:'6px', border:'1px solid #ddd'}} />
+                     <input type="number" placeholder="Tag가" value={tempChild.tag가} onChange={e=>setTempChild({...tempChild, tag가:e.target.value})} style={{padding:'8px', flex:1, borderRadius:'6px', border:'1px solid #ddd'}} />
+                   </div>
                    <button onClick={handleRegisterMaster} style={{width:'100%', padding:'12px', background:'#00cec9', color:'#fff', border:'none', borderRadius:'6px', fontWeight:'bold', marginTop:'10px', cursor:'pointer'}}>단품 정보 저장하기</button>
                 </div>
               </div>
 
+              {/* --- 그룹 등록 영역 --- */}
               <div style={{ background: '#fff', padding: '20px', borderRadius: '12px', borderLeft: `5px solid #6c5ce7`, boxShadow: '0 4px 10px rgba(0,0,0,0.05)' }}>
                 <h3 style={{ color: '#6c5ce7', marginBottom: '15px', fontSize: isMobile?'1rem':'1.17em' }}>📦 2. 그룹/세트 최종 구성</h3>
-                <div style={{display:'flex', gap:'5px', marginBottom:'8px'}}><select value={groupInput.brand} onChange={e=>setGroupInput({...groupInput, brand:e.target.value})} style={{padding:'8px', flex:1, borderRadius:'6px', border:'1px solid #ddd'}}><option value="">브랜드</option>{brands.map(b=><option key={b} value={b}>{b}</option>)}</select><select value={groupInput.season} onChange={e=>setGroupInput({...groupInput, season:e.target.value})} style={{padding:'8px', flex:1, borderRadius:'6px', border:'1px solid #ddd'}}><option value="">시즌</option>{seasons.map(s=><option key={s} value={s}>{s}</option>)}</select></div>
-                <div style={{display:'flex', gap:'5px', marginBottom:'10px'}}><select value={groupInput.type} onChange={e => setGroupInput({...groupInput, type: e.target.value})} style={{padding:'8px', flex:1, borderRadius:'6px', border:'1px solid #ddd'}}><option value="묶음">묶음상품</option><option value="세트">세트상품</option></select><select value={groupInput.category} onChange={e => setGroupInput({...groupInput, category: e.target.value})} style={{padding:'8px', flex:1, borderRadius:'6px', border:'1px solid #ddd'}}><option value="">복종</option>{categories.map(c => <option key={c} value={c}>{c}</option>)}</select></div>
-                <input placeholder="그룹 관리용 품번 (필수)" value={groupInput.groupCode} onChange={e => setGroupInput({...groupInput, groupCode: e.target.value})} style={{padding: '8px', border: '1px solid #ddd', borderRadius: '6px', width: '100%', boxSizing: 'border-box', marginBottom: '10px'}} />
-                <input placeholder="그룹 스타일넘버" value={groupInput.styleNo} onChange={e => setGroupInput({...groupInput, styleNo: e.target.value})} style={{padding: '8px', border: '1px solid #ddd', borderRadius: '6px', width: '100%', boxSizing: 'border-box', marginBottom: '10px'}} />
-                <input placeholder="그룹 상품명 (노출명)" value={groupInput.groupName} onChange={e => setGroupInput({...groupInput, groupName: e.target.value})} style={{padding: '8px', border: '1px solid #ddd', borderRadius: '6px', width: '100%', boxSizing: 'border-box', marginBottom: '10px'}} />
+                
+                <div style={{display:'flex', gap:'5px', marginBottom:'8px'}}>
+                  <select value={groupInput.brand} onChange={e=>setGroupInput({...groupInput, brand:e.target.value})} style={{padding:'8px', flex:1, borderRadius:'6px', border:'1px solid #ddd'}}><option value="">브랜드</option>{brands.map(b=><option key={b} value={b}>{b}</option>)}</select>
+                  <select value={groupInput.season} onChange={e=>setGroupInput({...groupInput, season:e.target.value})} style={{padding:'8px', flex:1, borderRadius:'6px', border:'1px solid #ddd'}}><option value="">시즌</option>{seasons.map(s=><option key={s} value={s}>{s}</option>)}</select>
+                </div>
+                
+                <div style={{display:'flex', gap:'5px', marginBottom:'10px'}}>
+                  <select value={groupInput.type} onChange={e => setGroupInput({...groupInput, type: e.target.value})} style={{padding:'8px', flex:1, borderRadius:'6px', border:'1px solid #ddd'}}><option value="묶음">묶음상품</option><option value="세트">세트상품</option></select>
+                  <select value={groupInput.category} onChange={e => setGroupInput({...groupInput, category: e.target.value})} style={{padding:'8px', flex:1, borderRadius:'6px', border:'1px solid #ddd'}}><option value="">복종</option>{categories.map(c => <option key={c} value={c}>{c}</option>)}</select>
+                </div>
+                
+                <input placeholder="그룹 관리용 품번 (필수)" value={groupInput.groupCode} onChange={e => setGroupInput({...groupInput, groupCode: e.target.value})} style={inputRegStyle} />
+                <input placeholder="그룹 스타일넘버" value={groupInput.styleNo} onChange={e => setGroupInput({...groupInput, styleNo: e.target.value})} style={inputRegStyle} />
+                <input placeholder="그룹 상품명 (노출명)" value={groupInput.groupName} onChange={e => setGroupInput({...groupInput, groupName: e.target.value})} style={inputRegStyle} />
+                
                 <div style={{ padding: '10px', background: '#f8f9fa', borderRadius: '8px', border: '1px solid #ddd', marginBottom:'10px' }}>
                    <label style={{fontSize:'12px', fontWeight:'bold', display:'block', marginBottom:'8px'}}>🔗 구성 단품 매핑</label>
                    
-                   {/* 🛡️ 튕김 방지 적용: 안전한 소문자 변환 및 그룹 필터 */}
                    <Select isMulti closeMenuOnSelect={false} controlShouldRenderValue={false} placeholder="상품 검색..." 
                      options={(masterProducts || []).filter(p => {
                        const gName = (groupInput?.groupName || '').toLowerCase().trim();
                        const gStyle = (groupInput?.styleNo || '').toLowerCase().trim();
                        if (!gName && !gStyle) return true;
-                       
                        const pName = String(p?.name || '').toLowerCase();
                        const pStyle = String(p?.style_no || '').toLowerCase();
-                       
                        return (gName && (pName.includes(gName) || pStyle.includes(gName))) || (gStyle && (pStyle.includes(gStyle) || pName.includes(gStyle)));
                      }).map(p => ({ label: `[${p?.code || ''}] ${p?.style_no || ''} - ${p?.name || ''}`, value: p?.code, data: p }))} 
-                     
                      value={(groupInput?.children || []).map(c => ({ label: c?.name || '', value: c?.code || '', data: c }))} 
                      onChange={(opts) => setGroupInput({...groupInput, children: opts ? opts.map(o => o.data) : []})} 
                    />
@@ -367,16 +483,22 @@ function App() {
                       {groupInput.children.map((c, i) => <div key={i} style={{borderBottom:'1px solid #f0f0f0', padding:'6px 8px', display:'flex', justifyContent:'space-between'}}><span>└ {c?.name} ({c?.code})</span><b style={{color:'red', cursor:'pointer'}} onClick={()=>setGroupInput({...groupInput, children: groupInput.children.filter((_,idx)=>idx!==i)})}>삭제</b></div>)}
                    </div>
                 </div>
-                <div style={{display:'flex', gap:'5px'}}><div style={{flex:1}}><label style={{fontSize:'11px'}}>총 원가</label><input type="number" value={groupInput.cost} onChange={e => setGroupInput({...groupInput, cost: e.target.value})} style={{padding: '8px', border: '1px solid #ddd', borderRadius: '6px', width: '100%', boxSizing: 'border-box', background:'#fff9db'}} /></div><div style={{flex:1}}><label style={{fontSize:'11px'}}>총 Tag가</label><input type="number" value={groupInput.tagPrice} onChange={e => setGroupInput({...groupInput, tagPrice: e.target.value})} style={{padding: '8px', border: '1px solid #ddd', borderRadius: '6px', width: '100%', boxSizing: 'border-box', background:'#fff9db'}} /></div></div>
+                
+                <div style={{display:'flex', gap:'5px'}}>
+                  <div style={{flex:1}}><label style={{fontSize:'11px'}}>총 원가</label><input type="number" value={groupInput.cost} onChange={e => setGroupInput({...groupInput, cost: e.target.value})} style={{...inputRegStyle, background:'#fff9db'}} /></div>
+                  <div style={{flex:1}}><label style={{fontSize:'11px'}}>총 Tag가</label><input type="number" value={groupInput.tagPrice} onChange={e => setGroupInput({...groupInput, tagPrice: e.target.value})} style={{...inputRegStyle, background:'#fff9db'}} /></div>
+                </div>
+                
                 <button onClick={handleSaveGroup} style={{width:'100%', padding:'12px', background:'#6c5ce7', color:'#fff', border:'none', borderRadius:'6px', fontWeight:'bold', cursor:'pointer', marginTop:'10px'}}>그룹 저장하기</button>
               </div>
             </div>
           </div>
         )}
 
-        {/* 메뉴 2: 조회/수정 */}
+        {/* ======================= [ 메뉴 2: 리스트 & 일괄변경 ] ======================= */}
         {activeMenu === 'list' && (
           <div style={{ width: '100%' }}>
+            
             <div style={{ display: 'flex', flexDirection: isMobile ? 'column' : 'row', justifyContent: 'space-between', alignItems: isMobile ? 'flex-start' : 'flex-end', marginBottom: '15px', gap: '10px' }}>
               <h2 style={{ margin: 0, fontSize: isMobile?'1.2rem':'1.5rem' }}>🔍 마진 시뮬레이션</h2>
               <div style={{ display: 'flex', gap: '8px', background:'#fff', padding:'8px', borderRadius:'8px', boxShadow:'0 2px 5px rgba(0,0,0,0.05)', width: isMobile ? '100%' : 'auto', boxSizing:'border-box', overflowX:'auto' }}>
