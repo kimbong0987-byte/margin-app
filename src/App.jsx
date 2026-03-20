@@ -18,7 +18,6 @@ function App() {
   const [newSeasonInput, setNewSeasonInput] = useState('');
   const [selectedFile, setSelectedFile] = useState(null);
 
-  // 🚀 검색 최적화: 치는 동안의 글자(searchInput)와 실제 검색할 글자(searchTerm) 분리
   const [searchInput, setSearchInput] = useState(''); 
   const [searchTerm, setSearchTerm] = useState('');
 
@@ -73,7 +72,7 @@ function App() {
   };
 
   // ==========================================
-  // 3. 유틸리티 및 데이터 가공 (🚀 캐싱 & 빠른 탐색)
+  // 3. 유틸리티 및 데이터 가공
   // ==========================================
   const handleSort = (key) => {
     let direction = 'asc';
@@ -114,7 +113,10 @@ function App() {
     const matchedMappedCodes = new Set();
     matchedGroups.forEach(g => {
       if (g.children) {
-        g.children.forEach(c => matchedMappedCodes.add(c.code));
+        g.children.forEach(c => {
+          // 💡 유령 방지: DB에 실제 존재하는 자식만 Mapped로 인정
+          if (masterMap.has(c.code)) matchedMappedCodes.add(c.code);
+        });
       }
     });
 
@@ -133,7 +135,10 @@ function App() {
        if ((calcItem.type === '묶음' || calcItem.type === '세트') && calcItem.children) {
            let sumW1 = 0, sumW2 = 0, sumW3 = 0, sumStock = 0, sumHqStock = 0;
            calcItem.children.forEach(childSnapshot => {
-               const liveChild = masterMap.get(childSnapshot.code) || childSnapshot;
+               const liveChild = masterMap.get(childSnapshot.code);
+               // 💡 핵심 1: 삭제된 단품은 계산에서 즉시 제외!
+               if (!liveChild) return; 
+
                sumW1 += Number(liveChild.order_w1 || 0);
                sumW2 += Number(liveChild.order_w2 || 0);
                sumW3 += Number(liveChild.order_w3 || 0);
@@ -176,7 +181,10 @@ function App() {
       expandedResult.push(item);
       if ((item.type === '묶음' || item.type === '세트') && item.children) {
         item.children.forEach(childSnapshot => {
-          const liveChild = masterMap.get(childSnapshot.code) || childSnapshot;
+          const liveChild = masterMap.get(childSnapshot.code);
+          // 💡 핵심 2: 삭제된 단품은 화면 리스트(DOM)에서도 아예 안 보이게 차단!
+          if (!liveChild) return; 
+
           const isGhost = renderedChildCodes.has(liveChild.code);
           
           expandedResult.push({ 
@@ -252,13 +260,14 @@ function App() {
     fetchData();
   };
 
+  // 💡 그룹 저장도 무조건 덮어쓰기(upsert)로 변경 (재매핑 적용 위함)
   const handleSaveGroup = async () => {
-    await supabase.from('groups').insert([{ 
+    await supabase.from('groups').upsert([{ 
       brand: groupInput.brand, season: groupInput.season, type: groupInput.type, category: groupInput.category, 
       code: groupInput.groupCode, style_no: groupInput.styleNo, name: groupInput.groupName, 
       cost: Number(groupInput.cost || 0), tag_price: Number(groupInput.tagPrice || 0), children: groupInput.children 
-    }]);
-    alert("✅ 그룹 저장 완료"); 
+    }], { onConflict: 'code' });
+    alert("✅ 그룹 저장(덮어쓰기) 완료"); 
     setGroupInput({ brand: '', season: '', type: '묶음', category: '', groupCode: '', styleNo: '', groupName: '', cost: '', tagPrice: '', children: [] }); 
     fetchData();
   };
@@ -640,6 +649,23 @@ function App() {
               <div style={{ background: '#fff', padding: '20px', borderRadius: '12px', borderLeft: `5px solid #6c5ce7`, boxShadow: '0 4px 10px rgba(0,0,0,0.05)' }}>
                 <h3 style={{ color: '#6c5ce7', marginBottom: '15px', fontSize: isMobile?'1rem':'1.17em' }}>📦 2. 그룹/세트 최종 구성</h3>
                 
+                {/* 💡 신규 기능: 기존 그룹 불러오기 및 재매핑 */}
+                <Select 
+                  placeholder="기존 그룹 불러오기 및 재매핑..." 
+                  options={(groups || []).map(g => ({ label: `[${g.type}] [${g.code}] ${g.name}`, data: g }))} 
+                  onChange={(opt) => {
+                    if(opt && opt.data) {
+                      setGroupInput({
+                        brand: opt.data.brand || '', season: opt.data.season || '', type: opt.data.type || '묶음', category: opt.data.category || '', 
+                        groupCode: opt.data.code || '', styleNo: opt.data.style_no || '', groupName: opt.data.name || '', 
+                        cost: opt.data.cost || '', tagPrice: opt.data.tag_price || '', children: opt.data.children || []
+                      });
+                    }
+                  }} 
+                  style={{marginBottom: '15px'}}
+                />
+                <div style={{height:'15px'}}></div>
+
                 <div style={{display:'flex', gap:'5px', marginBottom:'8px'}}>
                   <select value={groupInput.brand} onChange={e=>setGroupInput({...groupInput, brand:e.target.value})} style={{padding:'8px', flex:1, borderRadius:'6px', border:'1px solid #ddd'}}><option value="">브랜드</option>{brands.map(b=><option key={b} value={b}>{b}</option>)}</select>
                   <select value={groupInput.season} onChange={e=>setGroupInput({...groupInput, season:e.target.value})} style={{padding:'8px', flex:1, borderRadius:'6px', border:'1px solid #ddd'}}><option value="">시즌</option>{seasons.map(s=><option key={s} value={s}>{s}</option>)}</select>
@@ -655,9 +681,9 @@ function App() {
                 <input placeholder="그룹 상품명 (노출명)" value={groupInput.groupName} onChange={e => setGroupInput({...groupInput, groupName: e.target.value})} style={inputRegStyle} />
                 
                 <div style={{ padding: '10px', background: '#f8f9fa', borderRadius: '8px', border: '1px solid #ddd', marginBottom:'10px' }}>
-                   <label style={{fontSize:'12px', fontWeight:'bold', display:'block', marginBottom:'8px'}}>🔗 구성 단품 매핑</label>
+                   <label style={{fontSize:'12px', fontWeight:'bold', display:'block', marginBottom:'8px'}}>🔗 구성 단품 매핑 추가</label>
                    
-                   <Select isMulti closeMenuOnSelect={false} controlShouldRenderValue={false} placeholder="상품 검색..." 
+                   <Select isMulti closeMenuOnSelect={false} controlShouldRenderValue={false} placeholder="상품 검색하여 매핑 추가..." 
                      options={(masterProducts || []).filter(p => {
                        const gName = (groupInput?.groupName || '').toLowerCase().trim();
                        const gStyle = (groupInput?.styleNo || '').toLowerCase().trim();
@@ -678,7 +704,7 @@ function App() {
                   <div style={{flex:1}}><label style={{fontSize:'11px'}}>총 원가</label><input type="number" value={groupInput.cost} onChange={e => setGroupInput({...groupInput, cost: e.target.value})} style={{...inputRegStyle, background:'#fff9db'}} /></div>
                   <div style={{flex:1}}><label style={{fontSize:'11px'}}>총 Tag가</label><input type="number" value={groupInput.tagPrice} onChange={e => setGroupInput({...groupInput, tagPrice: e.target.value})} style={{...inputRegStyle, background:'#fff9db'}} /></div>
                 </div>
-                <button onClick={handleSaveGroup} style={{width:'100%', padding:'12px', background:'#6c5ce7', color:'#fff', border:'none', borderRadius:'6px', fontWeight:'bold', cursor:'pointer', marginTop:'10px'}}>그룹 저장하기</button>
+                <button onClick={handleSaveGroup} style={{width:'100%', padding:'12px', background:'#6c5ce7', color:'#fff', border:'none', borderRadius:'6px', fontWeight:'bold', cursor:'pointer', marginTop:'10px'}}>그룹 저장(수정)하기</button>
               </div>
             </div>
           </div>
@@ -701,7 +727,7 @@ function App() {
               </div>
             </div>
             
-            {/* 🚀 검색/필터 영역 (커서 안풀리도록 직접 배치) */}
+            {/* 🚀 검색창 분리 고정 (커서 풀림 원천 차단) */}
             <div style={{ background:'#fff', padding:'12px', borderRadius:'12px', marginBottom:'10px', display:'flex', gap:'10px', alignItems:'center', flexWrap:'wrap', boxShadow:'0 2px 5px rgba(0,0,0,0.05)' }}>
               <select value={filterCategory} onChange={e => setFilterCategory(e.target.value)} style={{padding:'6px', borderRadius:'6px', border:'1px solid #ddd', fontSize:'12px', flex: isMobile? '1 1 45%' : 'none'}}><option value="전체">복종 전체</option>{categories.map(c => <option key={c} value={c}>{c}</option>)}</select>
               <select value={filterBrand} onChange={e => setFilterBrand(e.target.value)} style={{padding:'6px', borderRadius:'6px', border:'1px solid #ddd', fontSize:'12px', flex: isMobile? '1 1 45%' : 'none'}}><option value="전체">브랜드 전체</option>{brands.map(b => <option key={b} value={b}>{b}</option>)}</select>
@@ -830,7 +856,7 @@ function App() {
               </div>
             </div>
             
-            {/* 🚀 검색/필터 영역 (커서 안풀리도록 직접 배치) */}
+            {/* 🚀 검색창 분리 고정 */}
             <div style={{ background:'#fff', padding:'12px', borderRadius:'12px', marginBottom:'10px', display:'flex', gap:'10px', alignItems:'center', flexWrap:'wrap', boxShadow:'0 2px 5px rgba(0,0,0,0.05)' }}>
               <select value={filterCategory} onChange={e => setFilterCategory(e.target.value)} style={{padding:'6px', borderRadius:'6px', border:'1px solid #ddd', fontSize:'12px', flex: isMobile? '1 1 45%' : 'none'}}><option value="전체">복종 전체</option>{categories.map(c => <option key={c} value={c}>{c}</option>)}</select>
               <select value={filterBrand} onChange={e => setFilterBrand(e.target.value)} style={{padding:'6px', borderRadius:'6px', border:'1px solid #ddd', fontSize:'12px', flex: isMobile? '1 1 45%' : 'none'}}><option value="전체">브랜드 전체</option>{brands.map(b => <option key={b} value={b}>{b}</option>)}</select>
@@ -869,7 +895,6 @@ function App() {
                   </tr>
                 </thead>
                 <tbody>
-                  {/* 🚀 렌더링 최적화: visibleData를 매핑하여 숨겨진 항목의 DOM 생성을 차단! */}
                   {visibleData.map((item, idx) => {
                     const isGhost = item.isGhost;
                     const isE = editingCode === item.code; 
