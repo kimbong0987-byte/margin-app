@@ -38,11 +38,10 @@ function App() {
     brand: '', season: '', type: '묶음', category: '', groupCode: '', styleNo: '', groupName: '', cost: '', tagPrice: '', children: [] 
   });
 
-  // 🌟 모바일 감지 상태
   const [isMobile, setIsMobile] = useState(window.innerWidth <= 768);
 
   // ==========================================
-  // 2. 초기 데이터 로드 & 화면 크기 감지
+  // 2. 초기 데이터 로드 & 화면 감지
   // ==========================================
   useEffect(() => { 
     fetchData(); 
@@ -174,31 +173,37 @@ function App() {
   };
 
   // ==========================================
-  // 4. 추가/삭제/저장 함수
+  // 4. 데이터 저장 및 수정 함수
   // ==========================================
-  const addCategory = async () => { 
-    if(!newCatInput.trim()) return; 
-    await supabase.from('categories').insert([{name: newCatInput}]); 
-    setNewCatInput(''); fetchData(); 
-  };
-  const deleteCategory = async (n) => { 
-    if(window.confirm(`[${n}] 삭제하시겠습니까?`)) { await supabase.from('categories').delete().eq('name',n); fetchData(); } 
-  };
-  const addBrand = async () => { 
-    if(!newBrandInput.trim()) return; 
-    await supabase.from('brands').insert([{name: newBrandInput}]); 
-    setNewBrandInput(''); fetchData(); 
-  };
-  const deleteBrand = async (n) => { 
-    if(window.confirm(`[${n}] 삭제하시겠습니까?`)) { await supabase.from('brands').delete().eq('name',n); fetchData(); } 
-  };
-  const addSeason = async () => { 
-    if(!newSeasonInput.trim()) return; 
-    await supabase.from('seasons').insert([{name: newSeasonInput}]); 
-    setNewSeasonInput(''); fetchData(); 
-  };
-  const deleteSeason = async (n) => { 
-    if(window.confirm(`[${n}] 삭제하시겠습니까?`)) { await supabase.from('seasons').delete().eq('name',n); fetchData(); } 
+  const addCategory = async () => { if(!newCatInput.trim()) return; await supabase.from('categories').insert([{name: newCatInput}]); setNewCatInput(''); fetchData(); };
+  const deleteCategory = async (n) => { if(window.confirm(`[${n}] 삭제하시겠습니까?`)) { await supabase.from('categories').delete().eq('name',n); fetchData(); } };
+  const addBrand = async () => { if(!newBrandInput.trim()) return; await supabase.from('brands').insert([{name: newBrandInput}]); setNewBrandInput(''); fetchData(); };
+  const deleteBrand = async (n) => { if(window.confirm(`[${n}] 삭제하시겠습니까?`)) { await supabase.from('brands').delete().eq('name',n); fetchData(); } };
+  const addSeason = async () => { if(!newSeasonInput.trim()) return; await supabase.from('seasons').insert([{name: newSeasonInput}]); setNewSeasonInput(''); fetchData(); };
+  const deleteSeason = async (n) => { if(window.confirm(`[${n}] 삭제하시겠습니까?`)) { await supabase.from('seasons').delete().eq('name',n); fetchData(); } };
+
+  // ✅ 누락되었던 핵심 엑셀 업로드 함수 복구!
+  const handleExcelUpload = async () => {
+    if (!selectedFile) return alert("파일을 선택해주세요.");
+    const reader = new FileReader();
+    reader.onload = async (e) => {
+      try {
+        const data = XLSX.read(e.target.result, { type: 'binary' });
+        const parsedRows = XLSX.utils.sheet_to_json(data.Sheets[data.SheetNames[0]]);
+        const parsed = parsedRows.map(i => ({ 
+          brand: i.브랜드 || '', season: i.시즌 || '', category: i.복종 || '미분류', 
+          code: String(i.품번 || ''), style_no: String(i.스타일 || ''), name: i.상품명 || '', 
+          cost: Number(i.원가 || 0), tag_price: Number(i.Tag가 || 0) 
+        }));
+        await supabase.from('master_products').upsert(parsed, { onConflict: 'code' });
+        alert("✅ 엑셀 업로드 성공!"); 
+        setSelectedFile(null);
+        fetchData();
+      } catch (err) { 
+        alert("엑셀 파싱 에러"); 
+      }
+    };
+    reader.readAsBinaryString(selectedFile);
   };
 
   const handleRegisterMaster = async () => {
@@ -273,10 +278,18 @@ function App() {
     let src = getProcessedData().filter(i => !i.isGhost);
     if (selectedCodes.length) src = src.filter(i => selectedCodes.includes(i.code));
     
-    const ws = XLSX.utils.json_to_sheet(src.map(i => ({ "품번": i.code, "상품명": i.name, "원가": i.cost, "행사가": i.price_sale })));
+    const dataToExport = src.map(item => ({
+      "구분": item.type, "품번": item.code, "브랜드": item.brand || '', "시즌": item.season || '',
+      "복종": item.category || '', "스타일코드": item.style_no || '', "상품명": item.name || '',
+      "원가": item.cost || 0, "Tag가": item.tag_price || 0, "네이버(변경)": item.price_naver || 0,
+      "쿠팡(변경)": item.price_coupang || 0, "로켓(변경)": item.price_rocket || 0, "골드(변경)": item.price_gold || 0,
+      "행사가(변경)": item.price_sale || 0
+    }));
+
+    const ws = XLSX.utils.json_to_sheet(dataToExport);
     const wb = XLSX.utils.book_new(); 
-    XLSX.utils.book_append_sheet(wb, ws, "Sheet1");
-    XLSX.writeFile(wb, "MD_LineSheet.xlsx");
+    XLSX.utils.book_append_sheet(wb, ws, "조회데이터");
+    XLSX.writeFile(wb, "MD_라인시트_데이터.xlsx");
   };
 
   const handleListExcelUpload = async (e) => {
