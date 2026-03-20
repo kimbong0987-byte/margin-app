@@ -4,7 +4,6 @@ import Select from 'react-select';
 import { supabase } from './supabaseClient'; 
 
 function App() {
-  // 1. 공통 상태
   const [activeMenu, setActiveMenu] = useState('list');
   const [masterProducts, setMasterProducts] = useState([]);
   const [groups, setGroups] = useState([]);
@@ -16,7 +15,6 @@ function App() {
   const [newSeasonInput, setNewSeasonInput] = useState('');
   const [selectedFile, setSelectedFile] = useState(null);
 
-  // 2. 조회 필터/정렬
   const [searchTerm, setSearchTerm] = useState('');
   const [filterCategory, setFilterCategory] = useState('전체');
   const [filterBrand, setFilterBrand] = useState('전체');   
@@ -24,24 +22,19 @@ function App() {
   const [sortConfig, setSortConfig] = useState({ key: 'code', direction: 'asc' });
   const [selectedCodes, setSelectedCodes] = useState([]); 
 
-  // 3. 일괄 수정 및 개별 수정
   const [batchInput, setBatchInput] = useState({ 
     cost: '', tagPrice: '', priceNaver: '', priceCoupang: '', priceRocket: '', priceGold: '', priceSale: '' 
   });
   const [editingCode, setEditingCode] = useState(null);
   const [editRow, setEditRow] = useState({});
 
-  // 4. 등록 메뉴 상태
   const [tempChild, setTempChild] = useState({ brand: '', season: '', category: '', 품번코드: '', 스타일넘버: '', 상품명: '', 원가: '', tag가: '' });
   const [groupInput, setGroupInput] = useState({ brand: '', season: '', type: '묶음', category: '', groupCode: '', styleNo: '', groupName: '', cost: '', tagPrice: '', children: [] });
 
-  // 🌟 [추가] 모바일 화면 감지 상태
   const [isMobile, setIsMobile] = useState(window.innerWidth <= 768);
 
   useEffect(() => { 
     fetchData(); 
-    
-    // 화면 크기 변경 감지 이벤트 리스너
     const handleResize = () => setIsMobile(window.innerWidth <= 768);
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
@@ -89,7 +82,7 @@ function App() {
       const matchCat = filterCategory === '전체' || item.category === filterCategory;
       const matchBrand = filterBrand === '전체' || item.brand === filterBrand;
       const matchSeason = filterSeason === '전체' || item.season === filterSeason;
-      const term = searchTerm.toLowerCase().trim();
+      const term = (searchTerm || '').toLowerCase().trim();
       const matchSearch = term === '' || (String(item.code || "") + String(item.style_no || "") + String(item.name || "")).toLowerCase().includes(term);
       return matchCat && matchBrand && matchSeason && matchSearch;
     };
@@ -139,7 +132,7 @@ function App() {
       code: tempChild.품번코드, style_no: tempChild.스타일넘버, name: tempChild.상품명, 
       cost: Number(tempChild.원가 || 0), tag_price: Number(tempChild.tag가 || 0) 
     }], { onConflict: 'code' });
-    alert("저장 완료"); setTempChild(p => ({ ...p, 품번코드: '', 스타일넘버: '', 상품명: '', 원가: '', tag가: '' })); fetchData();
+    alert("저장 완료"); setTempChild({ brand: '', season: '', category: '', 품번코드: '', 스타일넘버: '', 상품명: '', 원가: '', tag가: '' }); fetchData();
   };
 
   const handleSaveGroup = async () => {
@@ -148,7 +141,7 @@ function App() {
       code: groupInput.groupCode, style_no: groupInput.styleNo, name: groupInput.groupName, 
       cost: Number(groupInput.cost || 0), tag_price: Number(groupInput.tagPrice || 0), children: groupInput.children 
     }]);
-    alert("그룹 저장 완료"); setGroupInput(p => ({ ...p, groupCode:'', styleNo:'', groupName:'', cost:'', tagPrice:'', children:[] })); fetchData();
+    alert("그룹 저장 완료"); setGroupInput({ brand: '', season: '', type: '묶음', category: '', groupCode: '', styleNo: '', groupName: '', cost: '', tagPrice: '', children: [] }); fetchData();
   };
 
   const saveEdit = async (item) => {
@@ -213,9 +206,13 @@ function App() {
     reader.readAsBinaryString(file);
   };
 
-  // ==========================================
-  // 🎨 스타일 & 레이아웃 (반응형 추가)
-  // ==========================================
+  const downloadExcelTemplate = () => {
+    const templateData = [{ "브랜드": "몽벨", "시즌": "24SS", "복종": "상의", "품번": "TS-100", "스타일": "ST-01", "상품명": "기본 티셔츠", "원가": 5000, "Tag가": 20000 }];
+    const ws = XLSX.utils.json_to_sheet(templateData);
+    const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, "양식"); 
+    XLSX.writeFile(wb, "MD_상품등록양식.xlsx");
+  };
+
   const PRIMARY_COLOR = '#3498db';
   const GHOST_COLOR = '#bdc3c7'; 
 
@@ -231,28 +228,16 @@ function App() {
     cod: { w: 80,  l: 252 },
     cat: { w: 60,  l: 332 },
     sty: { w: 130, l: 392 },
-    nam: { w: 320, l: 522 }, // 상품명 320px 
-    cst: { w: 60,  l: 842 }, // 522 + 320 = 842
-    tag: { w: 65,  l: 902 }, // 842 + 60 = 902
+    nam: { w: 320, l: 522 }, 
+    cst: { w: 60,  l: 842 }, 
+    tag: { w: 65,  l: 902 }, 
   };
 
-  // 🌟 모바일에서는 좌우 스크롤이 자유롭도록 가로 틀고정 해제! (세로 헤더 고정은 유지)
   const fX = (l, isHeader = false) => {
     if (isMobile) {
-      return { 
-        position: isHeader ? 'sticky' : 'static', 
-        top: isHeader ? 0 : 'auto', 
-        left: 'auto', 
-        zIndex: isHeader ? 10 : 1, 
-        background: isHeader ? '#f8f9fa' : 'inherit' 
-      };
+      return { position: isHeader ? 'sticky' : 'static', top: isHeader ? 0 : 'auto', left: 'auto', zIndex: isHeader ? 10 : 1, background: isHeader ? '#f8f9fa' : 'inherit' };
     }
-    return { 
-      position: 'sticky', 
-      left: `${l}px`, 
-      zIndex: isHeader ? 20 : 10, 
-      background: isHeader ? '#f8f9fa' : 'inherit' 
-    };
+    return { position: 'sticky', left: `${l}px`, zIndex: isHeader ? 20 : 10, background: isHeader ? '#f8f9fa' : 'inherit' };
   };
   
   const cellS = (c) => ({ width: `${c.w}px`, minWidth: `${c.w}px`, maxWidth: `${c.w}px` });
@@ -260,7 +245,6 @@ function App() {
   const btnStyle = { padding:'2px 4px', background:'#eee', border:'1px solid #ccc', borderRadius:'3px', fontSize:'10px', cursor:'pointer' };
   const compareInputStyle = { width: '50px', fontSize: '10px', padding: '2px', border: '1px solid #3498db', borderRadius: '2px' };
 
-  // 🌟 모바일/PC 레이아웃 분기
   const sidebarStyle = isMobile
     ? { width: '100%', height: '65px', backgroundColor: '#2c3e50', color: '#fff', display: 'flex', flexDirection: 'row', justifyContent: 'space-around', alignItems: 'center', position:'fixed', bottom: 0, left: 0, zIndex: 999, padding: '0 10px', boxSizing: 'border-box' }
     : { width: '85px', minWidth: '85px', backgroundColor: '#2c3e50', color: '#fff', padding: '20px 5px', display: 'flex', flexDirection: 'column', alignItems: 'center', position:'fixed', height:'100vh', zIndex: 200 };
@@ -270,20 +254,14 @@ function App() {
     : { flex: 1, padding: '20px', boxSizing: 'border-box', marginLeft: '85px', width: 'calc(100% - 85px)', overflowY: 'auto' };
 
   const miniMenuStyle = (active) => ({ 
-    width: isMobile ? '80px' : '75px', 
-    height: isMobile ? '45px' : '65px', 
-    borderRadius: '10px', display: 'flex', 
-    flexDirection: isMobile ? 'row' : 'column', 
-    alignItems: 'center', justifyContent: 'center', 
-    marginBottom: isMobile ? '0' : '15px', 
-    cursor: 'pointer', backgroundColor: active ? PRIMARY_COLOR : 'transparent', color: active ? '#fff' : '#b2bec3', border: active ? 'none' : '1px solid #455a64',
-    gap: isMobile ? '5px' : '0'
+    width: isMobile ? '80px' : '75px', height: isMobile ? '45px' : '65px', borderRadius: '10px', display: 'flex', 
+    flexDirection: isMobile ? 'row' : 'column', alignItems: 'center', justifyContent: 'center', marginBottom: isMobile ? '0' : '15px', 
+    cursor: 'pointer', backgroundColor: active ? PRIMARY_COLOR : 'transparent', color: active ? '#fff' : '#b2bec3', border: active ? 'none' : '1px solid #455a64', gap: isMobile ? '5px' : '0'
   });
 
   return (
     <div style={{ display: 'flex', flexDirection: isMobile ? 'column' : 'row', minHeight: '100vh', width: '100vw', backgroundColor: '#f4f7f6', position: 'absolute', top: 0, left: 0, overflow: 'hidden' }}>
       
-      {/* ⬅️ 사이드바 (모바일 하단 네비게이션) */}
       <div style={sidebarStyle}>
         {!isMobile && <h2 style={{ color: PRIMARY_COLOR, fontSize: '0.7rem', marginBottom: '30px', textAlign: 'center' }}>LINE<br/>SHEET</h2>}
         <div onClick={() => setActiveMenu('register')} style={miniMenuStyle(activeMenu === 'register')}><span style={{fontWeight:'bold'}}>1</span><span style={{fontSize:'10px'}}>상품등록</span></div>
@@ -296,7 +274,6 @@ function App() {
           <div style={{ width: '100%' }}>
             <h2 style={{ marginBottom: '20px', fontSize: isMobile ? '1.2rem' : '1.5rem' }}>💎 상품 통합 등록</h2>
             
-            {/* 설정 카드 영역 */}
             <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr 1fr', gap: '15px', marginBottom: '20px' }}>
               <div style={{ background: '#fff', padding: '15px', borderRadius: '12px', borderLeft: `5px solid #e17055`, boxShadow: '0 4px 10px rgba(0,0,0,0.05)' }}>
                  <strong>🏷️ 브랜드 설정</strong>
@@ -321,7 +298,6 @@ function App() {
               </div>
             </div>
 
-            {/* 메인 등록 폼 영역 */}
             <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: '20px' }}>
               <div style={{ background: '#fff', padding: '20px', borderRadius: '12px', borderLeft: `5px solid #00cec9`, boxShadow: '0 4px 10px rgba(0,0,0,0.05)' }}>
                 <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'15px' }}>
@@ -332,7 +308,17 @@ function App() {
                    <input type="file" onChange={(e)=>setSelectedFile(e.target.files[0])} style={{fontSize:'11px', flex:1}}/>
                    <button onClick={handleExcelUpload} style={{fontSize:'11px', background:'#00cec9', color:'#fff', border:'none', borderRadius:'4px', padding:'6px 12px', cursor:'pointer', whiteSpace:'nowrap'}}>업로드</button>
                 </div>
-                <Select placeholder="기존 상품 검색 및 수정..." options={masterProducts.map(p => ({ label: `[${p.code}] ${p.name}`, data: p }))} onChange={(opt) => setTempChild({brand: opt.data.brand, season: opt.data.season, category: opt.data.category, 품번코드: opt.data.code, 스타일넘버: opt.data.style_no, 상품명: opt.data.name, 원가: opt.data.cost, tag가: opt.data.tag_price})} />
+                
+                {/* 🛡️ 튕김 방지 적용: masterProducts.map */}
+                <Select placeholder="기존 상품 검색 및 수정..." 
+                  options={(masterProducts || []).map(p => ({ label: `[${p?.code || '없음'}] ${p?.name || '없음'}`, data: p }))} 
+                  onChange={(opt) => {
+                    if(opt && opt.data) {
+                      setTempChild({brand: opt.data.brand || '', season: opt.data.season || '', category: opt.data.category || '', 품번코드: opt.data.code || '', 스타일넘버: opt.data.style_no || '', 상품명: opt.data.name || '', 원가: opt.data.cost || '', tag가: opt.data.tag_price || ''});
+                    }
+                  }} 
+                />
+                
                 <div style={{ marginTop: '15px' }}>
                    <div style={{display:'flex', gap:'5px', marginBottom:'8px'}}>
                      <select value={tempChild.brand} onChange={e=>setTempChild({...tempChild, brand:e.target.value})} style={{padding:'8px', flex:1, borderRadius:'6px', border:'1px solid #ddd'}}><option value="">브랜드</option>{brands.map(b=><option key={b} value={b}>{b}</option>)}</select>
@@ -358,15 +344,27 @@ function App() {
                 <input placeholder="그룹 상품명 (노출명)" value={groupInput.groupName} onChange={e => setGroupInput({...groupInput, groupName: e.target.value})} style={{padding: '8px', border: '1px solid #ddd', borderRadius: '6px', width: '100%', boxSizing: 'border-box', marginBottom: '10px'}} />
                 <div style={{ padding: '10px', background: '#f8f9fa', borderRadius: '8px', border: '1px solid #ddd', marginBottom:'10px' }}>
                    <label style={{fontSize:'12px', fontWeight:'bold', display:'block', marginBottom:'8px'}}>🔗 구성 단품 매핑</label>
-                   <Select isMulti closeMenuOnSelect={false} controlShouldRenderValue={false} placeholder="상품 검색..." options={masterProducts.filter(p => {
-                       const gName = groupInput.groupName.toLowerCase().trim();
-                       const gStyle = groupInput.styleNo.toLowerCase().trim();
+                   
+                   {/* 🛡️ 튕김 방지 적용: 안전한 소문자 변환 및 그룹 필터 */}
+                   <Select isMulti closeMenuOnSelect={false} controlShouldRenderValue={false} placeholder="상품 검색..." 
+                     options={(masterProducts || []).filter(p => {
+                       const gName = (groupInput?.groupName || '').toLowerCase().trim();
+                       const gStyle = (groupInput?.styleNo || '').toLowerCase().trim();
                        if (!gName && !gStyle) return true;
-                       return (gName && (String(p.name).toLowerCase().includes(gName) || String(p.style_no).toLowerCase().includes(gName))) || (gStyle && (String(p.style_no).toLowerCase().includes(gStyle) || String(p.name).toLowerCase().includes(gStyle)));
-                     }).map(p => ({ label: `[${p.code}] ${p.style_no} - ${p.name}`, value: p.code, data: p }))} value={groupInput.children.map(c => ({ label: c.name, value: c.code, data: c }))} onChange={(opts) => setGroupInput({...groupInput, children: opts ? opts.map(o => o.data) : []})} />
+                       
+                       const pName = String(p?.name || '').toLowerCase();
+                       const pStyle = String(p?.style_no || '').toLowerCase();
+                       
+                       return (gName && (pName.includes(gName) || pStyle.includes(gName))) || (gStyle && (pStyle.includes(gStyle) || pName.includes(gStyle)));
+                     }).map(p => ({ label: `[${p?.code || ''}] ${p?.style_no || ''} - ${p?.name || ''}`, value: p?.code, data: p }))} 
+                     
+                     value={(groupInput?.children || []).map(c => ({ label: c?.name || '', value: c?.code || '', data: c }))} 
+                     onChange={(opts) => setGroupInput({...groupInput, children: opts ? opts.map(o => o.data) : []})} 
+                   />
+
                    <div style={{ marginTop: '10px', maxHeight: '120px', overflowY: 'auto', fontSize:'11px', background:'#fff', border:'1px solid #eee', borderRadius:'4px' }}>
                       {groupInput.children.length === 0 && <div style={{padding:'10px', color:'#999', textAlign:'center'}}>선택 상품 없음.</div>}
-                      {groupInput.children.map((c, i) => <div key={i} style={{borderBottom:'1px solid #f0f0f0', padding:'6px 8px', display:'flex', justifyContent:'space-between'}}><span>└ {c.name} ({c.code})</span><b style={{color:'red', cursor:'pointer'}} onClick={()=>setGroupInput({...groupInput, children: groupInput.children.filter((_,idx)=>idx!==i)})}>삭제</b></div>)}
+                      {groupInput.children.map((c, i) => <div key={i} style={{borderBottom:'1px solid #f0f0f0', padding:'6px 8px', display:'flex', justifyContent:'space-between'}}><span>└ {c?.name} ({c?.code})</span><b style={{color:'red', cursor:'pointer'}} onClick={()=>setGroupInput({...groupInput, children: groupInput.children.filter((_,idx)=>idx!==i)})}>삭제</b></div>)}
                    </div>
                 </div>
                 <div style={{display:'flex', gap:'5px'}}><div style={{flex:1}}><label style={{fontSize:'11px'}}>총 원가</label><input type="number" value={groupInput.cost} onChange={e => setGroupInput({...groupInput, cost: e.target.value})} style={{padding: '8px', border: '1px solid #ddd', borderRadius: '6px', width: '100%', boxSizing: 'border-box', background:'#fff9db'}} /></div><div style={{flex:1}}><label style={{fontSize:'11px'}}>총 Tag가</label><input type="number" value={groupInput.tagPrice} onChange={e => setGroupInput({...groupInput, tagPrice: e.target.value})} style={{padding: '8px', border: '1px solid #ddd', borderRadius: '6px', width: '100%', boxSizing: 'border-box', background:'#fff9db'}} /></div></div>
@@ -388,7 +386,6 @@ function App() {
               </div>
             </div>
             
-            {/* 필터 바 */}
             <div style={{ background:'#fff', padding:'12px', borderRadius:'12px', marginBottom:'10px', display:'flex', gap:'10px', alignItems:'center', flexWrap:'wrap', boxShadow:'0 2px 5px rgba(0,0,0,0.05)' }}>
               <select value={filterCategory} onChange={e => setFilterCategory(e.target.value)} style={{padding:'6px', borderRadius:'6px', border:'1px solid #ddd', fontSize:'12px', flex: isMobile? '1 1 45%' : 'none'}}><option value="전체">복종 전체</option>{categories.map(c => <option key={c} value={c}>{c}</option>)}</select>
               <select value={filterBrand} onChange={e => setFilterBrand(e.target.value)} style={{padding:'6px', borderRadius:'6px', border:'1px solid #ddd', fontSize:'12px', flex: isMobile? '1 1 45%' : 'none'}}><option value="전체">브랜드 전체</option>{brands.map(b => <option key={b} value={b}>{b}</option>)}</select>
@@ -400,7 +397,6 @@ function App() {
               </div>
             </div>
 
-            {/* 일괄 변경 바 (모바일 가로 스크롤 지원) */}
             <div style={{ background:'#ebf3f9', padding:'8px', borderRadius:'8px', marginBottom:'15px', display:'flex', gap:'8px', alignItems:'center', border:'1px solid #3498db', overflowX:'auto', whiteSpace:'nowrap' }}>
               <strong style={{fontSize:'11px'}}>⚡ 일괄변경 ({selectedCodes.length}):</strong>
               <input type="number" placeholder="원가" onChange={e => setBatchInput({...batchInput, cost: e.target.value})} style={batchInputStyle} />
@@ -415,7 +411,6 @@ function App() {
               <button onClick={handleBatchDelete} style={{padding:'4px 10px', background:'#e74c3c', color:'#fff', border:'none', borderRadius:'4px', fontSize:'11px', cursor:'pointer', fontWeight:'bold'}}>🗑️ 삭제</button>
             </div>
 
-            {/* 메인 테이블 */}
             <div style={{ background:'#fff', borderRadius:'12px', overflowX:'auto', boxShadow:'0 4px 15px rgba(0,0,0,0.05)', maxHeight: isMobile ? '65vh' : '80vh' }}>
               <table style={{ borderCollapse: 'separate', borderSpacing: 0, width: 'max-content' }}>
                 <thead>
