@@ -18,7 +18,10 @@ function App() {
   const [newSeasonInput, setNewSeasonInput] = useState('');
   const [selectedFile, setSelectedFile] = useState(null);
 
+  // 🚀 검색창 최적화: 입력 중인 상태와 실제 적용된 상태를 분리
+  const [searchInput, setSearchInput] = useState(''); 
   const [searchTerm, setSearchTerm] = useState('');
+
   const [filterCategory, setFilterCategory] = useState('전체');
   const [filterBrand, setFilterBrand] = useState('전체');   
   const [filterSeason, setFilterSeason] = useState('전체'); 
@@ -70,7 +73,7 @@ function App() {
   };
 
   // ==========================================
-  // 3. 유틸리티 및 데이터 가공 (🚀 useMemo 적용 최적화!)
+  // 3. 유틸리티 및 데이터 가공 (🚀 알고리즘 최적화)
   // ==========================================
   const handleSort = (key) => {
     let direction = 'asc';
@@ -88,17 +91,21 @@ function App() {
     setCollapsedGroups(prev => prev.includes(code) ? prev.filter(c => c !== code) : [...prev, code]);
   };
 
-  // ✅ 신규 기능: 전체 그룹 일괄 열기/닫기
   const handleExpandAll = () => setCollapsedGroups([]);
   const handleCollapseAll = () => setCollapsedGroups(groups.map(g => g.code));
 
-  // 🚀 무거운 계산 로직을 useMemo로 캐싱 (토글 시 재계산 방지)
+  // 🚀 핵심 최적화: 캐싱 및 O(N) 해시맵 탐색 적용
   const processedData = useMemo(() => {
+    // 1. 초고속 탐색을 위한 해시맵(Map) 생성
+    const masterMap = new Map();
+    masterProducts.forEach(p => masterMap.set(p.code, p));
+
+    const term = (searchTerm || '').toLowerCase().trim();
+
     const isMatch = (item) => {
       const matchCat = filterCategory === '전체' || item.category === filterCategory;
       const matchBrand = filterBrand === '전체' || item.brand === filterBrand;
       const matchSeason = filterSeason === '전체' || item.season === filterSeason;
-      const term = (searchTerm || '').toLowerCase().trim();
       const matchSearch = term === '' || (String(item.code || "") + String(item.style_no || "") + String(item.name || "")).toLowerCase().includes(term);
       return matchCat && matchBrand && matchSeason && matchSearch;
     };
@@ -118,28 +125,33 @@ function App() {
 
     topLevel = topLevel.map(item => {
        let calcItem = { ...item };
-       let orderW1 = Number(calcItem.order_w1 || 0);
-       let orderW2 = Number(calcItem.order_w2 || 0);
-       let orderW3 = Number(calcItem.order_w3 || 0);
+       
+       calcItem.order_w1 = Number(calcItem.order_w1 || 0);
+       calcItem.order_w2 = Number(calcItem.order_w2 || 0);
+       calcItem.order_w3 = Number(calcItem.order_w3 || 0);
+       calcItem.stock = Number(calcItem.stock || 0);
+       calcItem.hq_stock = Number(calcItem.hq_stock || 0);
 
        if ((calcItem.type === '묶음' || calcItem.type === '세트') && calcItem.children) {
-           let sumW1 = 0, sumW2 = 0, sumW3 = 0;
+           let sumW1 = 0, sumW2 = 0, sumW3 = 0, sumStock = 0, sumHqStock = 0;
            calcItem.children.forEach(childSnapshot => {
-               const liveChild = masterProducts.find(p => p.code === childSnapshot.code) || childSnapshot;
+               // 🚀 여기서 masterProducts.find()를 제거하고 0.001초만에 찾는 Map 적용
+               const liveChild = masterMap.get(childSnapshot.code) || childSnapshot;
                sumW1 += Number(liveChild.order_w1 || 0);
                sumW2 += Number(liveChild.order_w2 || 0);
                sumW3 += Number(liveChild.order_w3 || 0);
+               sumStock += Number(liveChild.stock || 0);
+               sumHqStock += Number(liveChild.hq_stock || 0);
            });
-           orderW1 += sumW1;
-           orderW2 += sumW2;
-           orderW3 += sumW3;
+           
+           calcItem.order_w1 = sumW1;
+           calcItem.order_w2 = sumW2;
+           calcItem.order_w3 = sumW3;
+           calcItem.stock = sumStock;       
+           calcItem.hq_stock = sumHqStock; 
        }
-       calcItem.order_w1 = orderW1;
-       calcItem.order_w2 = orderW2;
-       calcItem.order_w3 = orderW3;
-       calcItem.totalOrder = orderW3; 
-       calcItem.stock = Number(calcItem.stock || 0);
-       calcItem.hq_stock = Number(calcItem.hq_stock || 0);
+       
+       calcItem.totalOrder = calcItem.order_w3; 
        
        const cost = Number(calcItem.cost || 0);
        const sale = Number(calcItem.price_sale || 0);
@@ -167,7 +179,8 @@ function App() {
       expandedResult.push(item);
       if ((item.type === '묶음' || item.type === '세트') && item.children) {
         item.children.forEach(childSnapshot => {
-          const liveChild = masterProducts.find(p => p.code === childSnapshot.code) || childSnapshot;
+          // 🚀 여기도 초고속 탐색 Map 적용
+          const liveChild = masterMap.get(childSnapshot.code) || childSnapshot;
           const isGhost = renderedChildCodes.has(liveChild.code);
           
           expandedResult.push({ 
@@ -204,14 +217,19 @@ function App() {
         ratio: cost > 0 ? (sale / cost).toFixed(1) : "0.0", discSale 
       };
     });
-  }, [masterProducts, groups, filterCategory, filterBrand, filterSeason, searchTerm, sortConfig]); // 종속성 목록 (collapsedGroups 제외)
+  }, [masterProducts, groups, filterCategory, filterBrand, filterSeason, searchTerm, sortConfig]);
+
+  // 🚀 렌더링 최적화: 닫혀있는 하위 그룹은 아예 배열에서 빼버림
+  const visibleData = useMemo(() => {
+    return processedData.filter(item => !(item.isMappedChild && collapsedGroups.includes(item.parentCode)));
+  }, [processedData, collapsedGroups]);
 
   const handleSelectAll = (e) => {
     if (e.target.checked) {
       if (activeMenu === 'inventory') {
-        setSelectedCodes(processedData.map(item => item.code));
+        setSelectedCodes(visibleData.map(item => item.code));
       } else {
-        setSelectedCodes(processedData.filter(i => !i.isGhost).map(item => item.code));
+        setSelectedCodes(visibleData.filter(i => !i.isGhost).map(item => item.code));
       }
     } else {
       setSelectedCodes([]);
@@ -541,8 +559,15 @@ function App() {
       <select value={filterBrand} onChange={e => setFilterBrand(e.target.value)} style={{padding:'6px', borderRadius:'6px', border:'1px solid #ddd', fontSize:'12px', flex: isMobile? '1 1 45%' : 'none'}}><option value="전체">브랜드 전체</option>{brands.map(b => <option key={b} value={b}>{b}</option>)}</select>
       <select value={filterSeason} onChange={e => setFilterSeason(e.target.value)} style={{padding:'6px', borderRadius:'6px', border:'1px solid #ddd', fontSize:'12px', flex: isMobile? '1 1 45%' : 'none'}}><option value="전체">시즌 전체</option>{seasons.map(s => <option key={s} value={s}>{s}</option>)}</select>
       <div style={{ display:'flex', width: isMobile ? '100%' : 'auto', gap:'5px' }}>
-        <input placeholder="검색 (품번,상품명)" value={searchTerm} onChange={e => setSearchTerm(e.target.value)} style={{padding:'6px', flex:1, minWidth:'120px', border:'1px solid #ddd', borderRadius:'6px', fontSize:'12px'}} />
-        <button onClick={fetchData} style={{padding:'6px 15px', background:PRIMARY_COLOR, color:'#fff', border:'none', borderRadius:'6px', fontSize:'12px', cursor:'pointer', whiteSpace:'nowrap'}}>조회</button>
+        {/* 🚀 검색창 최적화: 타이핑 중에는 상태만 변경, 엔터 칠 때만 필터 적용! */}
+        <input 
+          placeholder="검색 (품번,상품명) 후 엔터" 
+          value={searchInput} 
+          onChange={e => setSearchInput(e.target.value)} 
+          onKeyDown={e => { if(e.key === 'Enter') { setSearchTerm(searchInput); fetchData(); } }}
+          style={{padding:'6px', flex:1, minWidth:'120px', border:'1px solid #ddd', borderRadius:'6px', fontSize:'12px'}} 
+        />
+        <button onClick={() => { setSearchTerm(searchInput); fetchData(); }} style={{padding:'6px 15px', background:PRIMARY_COLOR, color:'#fff', border:'none', borderRadius:'6px', fontSize:'12px', cursor:'pointer', whiteSpace:'nowrap'}}>조회</button>
       </div>
     </div>
   );
@@ -689,7 +714,6 @@ function App() {
             <div style={{ display: 'flex', flexDirection: isMobile ? 'column' : 'row', justifyContent: 'space-between', alignItems: isMobile ? 'flex-start' : 'flex-end', marginBottom: '15px', gap: '10px' }}>
               <h2 style={{ margin: 0, fontSize: isMobile?'1.2rem':'1.5rem' }}>💰 가격/마진 시뮬레이션</h2>
               <div style={{ display: 'flex', gap: '8px', background:'#fff', padding:'8px', borderRadius:'8px', boxShadow:'0 2px 5px rgba(0,0,0,0.05)', width: isMobile ? '100%' : 'auto', boxSizing:'border-box', overflowX:'auto', whiteSpace:'nowrap' }}>
-                {/* ✅ 신규: 전체 펼치기 / 접기 버튼 */}
                 <button onClick={handleExpandAll} style={{padding:'6px 10px', background:'#34495e', color:'#fff', border:'none', borderRadius:'4px', fontSize:'11px', cursor:'pointer', fontWeight:'bold'}}>▼ 전체열기</button>
                 <button onClick={handleCollapseAll} style={{padding:'6px 10px', background:'#7f8c8d', color:'#fff', border:'none', borderRadius:'4px', fontSize:'11px', cursor:'pointer', fontWeight:'bold'}}>▶ 전체닫기</button>
                 <div style={{width:'1px', background:'#ddd', margin:'0 2px'}}></div>
@@ -721,7 +745,7 @@ function App() {
               <table style={{ borderCollapse: 'separate', borderSpacing: 0, width: 'max-content' }}>
                 <thead>
                   <tr style={{ background: '#f8f9fa' }}>
-                    <th style={{ ...thStyle, ...fX(cols.chk.l, true), ...cellS(cols.chk) }}><input type="checkbox" onChange={handleSelectAll} checked={selectedCodes.length > 0 && selectedCodes.length === processedData.filter(i=>!i.isGhost).length} /></th>
+                    <th style={{ ...thStyle, ...fX(cols.chk.l, true), ...cellS(cols.chk) }}><input type="checkbox" onChange={handleSelectAll} checked={selectedCodes.length > 0 && selectedCodes.length === visibleData.filter(i=>!i.isGhost).length} /></th>
                     <th style={{ ...thStyle, ...fX(cols.mng.l, true), ...cellS(cols.mng) }}>관리</th>
                     <th style={{ ...thStyle, ...fX(cols.brd.l, true), ...cellS(cols.brd) }} onClick={() => handleSort('brand')}>브랜드</th>
                     <th style={{ ...thStyle, ...fX(cols.sea.l, true), ...cellS(cols.sea) }} onClick={() => handleSort('season')}>시즌</th>
@@ -744,10 +768,8 @@ function App() {
                   </tr>
                 </thead>
                 <tbody>
-                  {processedData.map((item, idx) => {
-                    // 💡 [핵심] 토글 기능 구현: 부모가 접혀있으면 숨김
-                    if (item.isMappedChild && collapsedGroups.includes(item.parentCode)) return null;
-
+                  {/* 🚀 렌더링 최적화: visibleData를 매핑하여 숨겨진 항목의 DOM 생성을 차단! */}
+                  {visibleData.map((item, idx) => {
                     const isGhost = item.isGhost;
                     const isE = editingCode === item.code && !isGhost;
                     const isChild = item.isMappedChild;
@@ -764,7 +786,6 @@ function App() {
                         <td style={{ ...tdStyle, ...fX(cols.brd.l), ...cellS(cols.brd), background: trBg }}>{isGhost ? <span style={{color:GHOST_COLOR}}>{item.brand}</span> : (isE ? <select value={editRow.brand||''} onChange={e=>setEditRow({...editRow, brand:e.target.value})} style={{fontSize:'10px', padding:'0', width:'100%'}}><option value="">-</option>{brands.map(b=><option key={b} value={b}>{b}</option>)}</select> : item.brand)}</td>
                         <td style={{ ...tdStyle, ...fX(cols.sea.l), ...cellS(cols.sea), background: trBg }}>{isGhost ? <span style={{color:GHOST_COLOR}}>{item.season}</span> : (isE ? <select value={editRow.season||''} onChange={e=>setEditRow({...editRow, season:e.target.value})} style={{fontSize:'10px', padding:'0', width:'100%'}}><option value="">-</option>{seasons.map(s=><option key={s} value={s}>{s}</option>)}</select> : item.season)}</td>
                         
-                        {/* 💡 [신규 토글 버튼] 그룹일 경우 열기/닫기 아이콘 노출 */}
                         <td style={{ ...tdStyle, ...fX(cols.typ.l), ...cellS(cols.typ), background: trBg, color: isGhost ? GHOST_COLOR : (item.type.includes('묶음')||item.type.includes('세트')?'#6c5ce7':(isChild?'#b2bec3':'#999')), fontWeight: (item.type.includes('묶음')||item.type.includes('세트'))?'bold':'normal' }}>
                           {(item.type.includes('묶음') || item.type.includes('세트')) && (
                             <span onClick={() => toggleGroup(item.code)} style={{cursor:'pointer', marginRight:'4px', display:'inline-block', width:'12px', color:'#6c5ce7'}}>
@@ -805,7 +826,6 @@ function App() {
               <h2 style={{ margin: 0, fontSize: isMobile?'1.2rem':'1.5rem' }}>📦 재고 및 발주 관리</h2>
               
               <div style={{ display: 'flex', gap: '8px', background:'#fff', padding:'8px', borderRadius:'8px', boxShadow:'0 2px 5px rgba(0,0,0,0.05)', width: isMobile ? '100%' : 'auto', boxSizing:'border-box', overflowX:'auto', whiteSpace:'nowrap' }}>
-                {/* ✅ 신규: 전체 펼치기 / 접기 버튼 */}
                 <button onClick={handleExpandAll} style={{padding:'6px 10px', background:'#34495e', color:'#fff', border:'none', borderRadius:'4px', fontSize:'11px', cursor:'pointer', fontWeight:'bold'}}>▼ 전체열기</button>
                 <button onClick={handleCollapseAll} style={{padding:'6px 10px', background:'#7f8c8d', color:'#fff', border:'none', borderRadius:'4px', fontSize:'11px', cursor:'pointer', fontWeight:'bold'}}>▶ 전체닫기</button>
                 <div style={{width:'1px', background:'#ddd', margin:'0 2px'}}></div>
@@ -826,7 +846,7 @@ function App() {
               <table style={{ borderCollapse: 'separate', borderSpacing: 0, width: 'max-content' }}>
                 <thead>
                   <tr style={{ background: '#f8f9fa' }}>
-                    <th style={{ ...thStyle, ...fX(cols.chk.l, true), ...cellS(cols.chk) }}><input type="checkbox" onChange={handleSelectAll} checked={selectedCodes.length > 0 && selectedCodes.length === processedData.length} /></th>
+                    <th style={{ ...thStyle, ...fX(cols.chk.l, true), ...cellS(cols.chk) }}><input type="checkbox" onChange={handleSelectAll} checked={selectedCodes.length > 0 && selectedCodes.length === visibleData.length} /></th>
                     <th style={{ ...thStyle, ...fX(cols.mng.l, true), ...cellS(cols.mng) }}>관리</th>
                     <th style={{ ...thStyle, ...fX(cols.brd.l, true), ...cellS(cols.brd) }} onClick={() => handleSort('brand')}>브랜드</th>
                     <th style={{ ...thStyle, ...fX(cols.sea.l, true), ...cellS(cols.sea) }} onClick={() => handleSort('season')}>시즌</th>
@@ -844,9 +864,7 @@ function App() {
                   </tr>
                 </thead>
                 <tbody>
-                  {processedData.map((item, idx) => {
-                    if (item.isMappedChild && collapsedGroups.includes(item.parentCode)) return null;
-
+                  {visibleData.map((item, idx) => {
                     const isGhost = item.isGhost;
                     const isE = editingCode === item.code; 
                     const isChild = item.isMappedChild;
