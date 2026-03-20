@@ -72,7 +72,7 @@ function App() {
   };
 
   // ==========================================
-  // 3. 유틸리티 및 데이터 가공 (UseMemo 최적화)
+  // 3. 유틸리티 및 데이터 가공
   // ==========================================
   const handleSort = (key) => {
     let direction = 'asc';
@@ -144,11 +144,12 @@ function App() {
                sumHqStock += Number(liveChild.hq_stock || 0);
            });
            
-           calcItem.order_w1 = sumW1;
-           calcItem.order_w2 = sumW2;
-           calcItem.order_w3 = sumW3;
-           calcItem.stock = sumStock;       
-           calcItem.hq_stock = sumHqStock; 
+           // 💡 덮어쓰지 않고, 부모 고유값 + 하위 자식들의 합계를 더해줍니다! (증발 방지)
+           calcItem.order_w1 += sumW1;
+           calcItem.order_w2 += sumW2;
+           calcItem.order_w3 += sumW3;
+           calcItem.stock += sumStock;       
+           calcItem.hq_stock += sumHqStock; 
        }
        
        calcItem.totalOrder = calcItem.order_w3; 
@@ -237,7 +238,7 @@ function App() {
   };
 
   // ==========================================
-  // 4. 데이터 저장 및 삭제 함수
+  // 4. 데이터 처리
   // ==========================================
   const addCategory = async () => { if(!newCatInput.trim()) return; await supabase.from('categories').insert([{name: newCatInput}]); setNewCatInput(''); fetchData(); };
   const deleteCategory = async (n) => { if(window.confirm(`[${n}] 삭제하시겠습니까?`)) { await supabase.from('categories').delete().eq('name',n); fetchData(); } };
@@ -321,7 +322,7 @@ function App() {
   };
 
   // ==========================================
-  // 📊 엑셀 처리 함수들 (업로드/다운로드)
+  // 📊 엑셀 처리 함수들
   // ==========================================
   const handleExcelUpload = async () => {
     if (!selectedFile) return alert("파일을 선택해주세요.");
@@ -380,7 +381,6 @@ function App() {
     reader.readAsBinaryString(file); e.target.value = null;
   };
 
-  // 📦 [핵심 1] 온라인재고 업데이트 시 DB에 '바코드 사전' 영구 저장!
   const handleInventoryExcelUpload = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
@@ -393,20 +393,19 @@ function App() {
         const rows = XLSX.utils.sheet_to_json(sheet, { header: "A", defval: "" });
         
         const stockMap = {};
-        const barcodeMap = {}; // 품번별로 엑셀의 모든 옵션별칭(바코드)을 모아두는 맵
+        const barcodeMap = {}; 
 
         rows.forEach(row => {
-          const cValue = String(row["C"] || "").trim(); // 상품코드 (100032-0001)
-          const xValue = Number(row["X"]) || 0;         // 합재고
+          const cValue = String(row["C"] || "").trim(); 
+          const xValue = Number(row["X"]) || 0;         
           
-          // P, R, T, V열에서 바코드(옵션별칭) 데이터 추출
           const pValue = String(row["P"] || "").trim(); 
           const rValue = String(row["R"] || "").trim();
           const tValue = String(row["T"] || "").trim();
           const vValue = String(row["V"] || "").trim();
 
           if (cValue && cValue !== "상품코드") {
-            const baseCode = cValue.split('-')[0]; // 진짜 품번 추출 (예: 100032)
+            const baseCode = cValue.split('-')[0]; 
             if (baseCode) {
               stockMap[baseCode] = (stockMap[baseCode] || 0) + xValue;
               
@@ -421,18 +420,18 @@ function App() {
 
         const updatePromises = [];
         let updatedCount = 0;
+        let barcodeCount = 0;
 
         for (const [code, stockVal] of Object.entries(stockMap)) {
           const isGroup = groups.some(g => g.code === code);
           const targetTable = isGroup ? 'groups' : 'master_products';
-          
           const existingProduct = isGroup ? groups.find(g => g.code === code) : masterProducts.find(p => p.code === code);
 
           if (existingProduct) {
-            // 기존 DB 바코드와 엑셀에서 새로 긁어온 바코드를 병합
             const existingBarcodes = existingProduct.barcode ? existingProduct.barcode.split(',') : [];
             existingBarcodes.forEach(b => barcodeMap[code].add(b));
             const newBarcodeStr = Array.from(barcodeMap[code]).join(',');
+            if (barcodeMap[code].size > 0) barcodeCount++;
 
             updatePromises.push(
               supabase.from(targetTable).update({ stock: stockVal, barcode: newBarcodeStr }).eq('code', code)
@@ -441,7 +440,7 @@ function App() {
           }
         }
         await Promise.all(updatePromises);
-        alert(`📦 온라인재고 업데이트 성공!\n(총 ${updatedCount}개 품번의 재고 및 '바코드 사전'이 저장되었습니다.)`);
+        alert(`📦 온라인재고 업데이트 성공!\n\n✅ 재고 반영: ${updatedCount}개 품번\n🔗 바코드 사전 등록: ${barcodeCount}개 품번\n\n이제 본사재고를 올리시면 100% 매칭됩니다!`);
         fetchData();
       } catch (err) { alert("❌ 재고 엑셀 처리 중 오류가 발생했습니다."); }
     };
@@ -449,7 +448,6 @@ function App() {
     e.target.value = null; 
   };
 
-  // 🏢 [핵심 2] 본사재고 업데이트 시 만들어둔 '바코드 사전'으로 정확하게 매핑!
   const handleHqStockExcelUpload = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
@@ -462,22 +460,30 @@ function App() {
         const rows = XLSX.utils.sheet_to_json(sheet, { header: "A", defval: "" });
 
         const hqMap = {}; 
+        let matchedBarcodes = 0;
+        let unmatchedBarcodes = 0;
+
+        // 💡 모든 상품(그룹+단품)을 합쳐서 검색 풀을 만듭니다!
+        const allProducts = [...masterProducts, ...groups];
 
         rows.forEach(row => {
-          const cValue = String(row["C"] || "").trim(); // 상품바코드 (예: MW3EBWPL84BK064)
+          const cValue = String(row["C"] || "").trim(); // 상품바코드
           const nValue = Number(row["N"]) || 0;         // 실재고
 
-          if (cValue && cValue !== "상품바코드") {
-            // 💡 마법의 로직: DB에 저장된 '바코드 사전(barcode)'에 이 바코드가 포함되어 있으면 매핑!
-            const targetProduct = masterProducts.find(p => 
+          if (cValue && cValue !== "상품바코드" && cValue !== "기본항목") {
+            // DB에 저장된 바코드 사전 또는 스타일넘버로 검색
+            const targetProduct = allProducts.find(p => 
               (p.barcode && p.barcode.includes(cValue)) || 
-              (p.style_no && cValue.includes(p.style_no)) || 
-              (p.code && cValue.includes(p.code))
+              (p.style_no && p.style_no.length > 2 && cValue.includes(p.style_no)) || 
+              (p.code && p.code.length > 2 && cValue.includes(p.code))
             );
 
             if (targetProduct) {
               const mainCode = targetProduct.code;
               hqMap[mainCode] = (hqMap[mainCode] || 0) + nValue;
+              matchedBarcodes++;
+            } else {
+              unmatchedBarcodes++;
             }
           }
         });
@@ -494,18 +500,17 @@ function App() {
         }
 
         await Promise.all(updatePromises);
-        alert(`🏢 본사재고 데이터 업데이트 성공!\n(총 ${updatedCount}개 품번의 재고 수량이 합산 매핑되었습니다.)`);
+        alert(`🏢 본사재고 매핑 완료!\n\n✅ 찾은 바코드: ${matchedBarcodes}건 -> DB 업데이트: ${updatedCount}품번\n❌ 못 찾은 바코드: ${unmatchedBarcodes}건\n\n※ 실패 건수가 많다면 [온라인재고] 파일을 먼저 업로드하여 '바코드 사전'을 갱신해주세요.`);
         fetchData();
       } catch (err) {
         console.error(err);
-        alert("❌ 본사재고 엑셀 처리 중 오류가 발생했습니다. 파일 형식을 확인해주세요.");
+        alert("❌ 본사재고 엑셀 처리 중 오류가 발생했습니다.");
       }
     };
     reader.readAsBinaryString(file);
     e.target.value = null; 
   };
 
-  // 🛒 [핵심 3] 발주 데이터 업데이트 시에도 '바코드 사전' 활용!
   const handleOrderExcelUpload = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
@@ -518,6 +523,10 @@ function App() {
         const rows = XLSX.utils.sheet_to_json(sheet, { header: "A", defval: "" });
 
         const orderMap = {}; 
+        let matchedBarcodes = 0;
+        let unmatchedBarcodes = 0;
+
+        const allProducts = [...masterProducts, ...groups];
 
         rows.forEach(row => {
           const aValue = String(row["A"] || "").trim(); 
@@ -527,13 +536,12 @@ function App() {
 
           const match = aValue.match(/\(([^)]+)\)/);
           if (match) {
-            const styleCode = match[1].trim(); // 괄호 안의 옵션별칭/바코드
+            const styleCode = match[1].trim();
 
-            // 💡 마법의 로직: DB에 저장된 '바코드 사전(barcode)'에서 찾음!
-            const targetProduct = masterProducts.find(p => 
+            const targetProduct = allProducts.find(p => 
               (p.barcode && p.barcode.includes(styleCode)) ||
-              (p.style_no && styleCode.includes(p.style_no)) || 
-              (p.code && styleCode.includes(p.code))
+              (p.style_no && p.style_no.length > 2 && styleCode.includes(p.style_no)) || 
+              (p.code && p.code.length > 2 && styleCode.includes(p.code))
             );
 
             if (targetProduct) {
@@ -543,6 +551,9 @@ function App() {
               orderMap[mainCode].w1 += kValue;
               orderMap[mainCode].w2 += lValue;
               orderMap[mainCode].w3 += mValue;
+              matchedBarcodes++;
+            } else {
+              unmatchedBarcodes++;
             }
           }
         });
@@ -565,11 +576,11 @@ function App() {
         }
 
         await Promise.all(updatePromises);
-        alert(`🛒 발주 데이터 업데이트 성공!\n(총 ${updatedCount}개 품번의 발주 수량이 합산 매핑되었습니다.)`);
+        alert(`🛒 발주 데이터 매핑 완료!\n\n✅ 찾은 품번: ${matchedBarcodes}건 -> DB 업데이트: ${updatedCount}품번\n❌ 못 찾은 품번: ${unmatchedBarcodes}건`);
         fetchData();
       } catch (err) {
         console.error(err);
-        alert("❌ 발주 엑셀 처리 중 오류가 발생했습니다. 파일 형식을 확인해주세요.");
+        alert("❌ 발주 엑셀 처리 중 오류가 발생했습니다.");
       }
     };
     reader.readAsBinaryString(file);
@@ -634,24 +645,6 @@ function App() {
     flexDirection: isMobile ? 'row' : 'column', alignItems: 'center', justifyContent: 'center', marginBottom: isMobile ? '0' : '15px', 
     cursor: 'pointer', backgroundColor: active ? PRIMARY_COLOR : 'transparent', color: active ? '#fff' : '#b2bec3', border: active ? 'none' : '1px solid #455a64', gap: isMobile ? '5px' : '0'
   });
-
-  const FilterBar = () => (
-    <div style={{ background:'#fff', padding:'12px', borderRadius:'12px', marginBottom:'10px', display:'flex', gap:'10px', alignItems:'center', flexWrap:'wrap', boxShadow:'0 2px 5px rgba(0,0,0,0.05)' }}>
-      <select value={filterCategory} onChange={e => setFilterCategory(e.target.value)} style={{padding:'6px', borderRadius:'6px', border:'1px solid #ddd', fontSize:'12px', flex: isMobile? '1 1 45%' : 'none'}}><option value="전체">복종 전체</option>{categories.map(c => <option key={c} value={c}>{c}</option>)}</select>
-      <select value={filterBrand} onChange={e => setFilterBrand(e.target.value)} style={{padding:'6px', borderRadius:'6px', border:'1px solid #ddd', fontSize:'12px', flex: isMobile? '1 1 45%' : 'none'}}><option value="전체">브랜드 전체</option>{brands.map(b => <option key={b} value={b}>{b}</option>)}</select>
-      <select value={filterSeason} onChange={e => setFilterSeason(e.target.value)} style={{padding:'6px', borderRadius:'6px', border:'1px solid #ddd', fontSize:'12px', flex: isMobile? '1 1 45%' : 'none'}}><option value="전체">시즌 전체</option>{seasons.map(s => <option key={s} value={s}>{s}</option>)}</select>
-      <div style={{ display:'flex', width: isMobile ? '100%' : 'auto', gap:'5px' }}>
-        <input 
-          placeholder="검색 (품번,상품명) 후 엔터" 
-          value={searchInput} 
-          onChange={e => setSearchInput(e.target.value)} 
-          onKeyDown={e => { if(e.key === 'Enter') setSearchTerm(searchInput); }}
-          style={{padding:'6px', flex:1, minWidth:'120px', border:'1px solid #ddd', borderRadius:'6px', fontSize:'12px'}} 
-        />
-        <button onClick={() => setSearchTerm(searchInput)} style={{padding:'6px 15px', background:PRIMARY_COLOR, color:'#fff', border:'none', borderRadius:'6px', fontSize:'12px', cursor:'pointer', whiteSpace:'nowrap'}}>조회</button>
-      </div>
-    </div>
-  );
 
   return (
     <div style={{ display: 'flex', flexDirection: isMobile ? 'column' : 'row', minHeight: '100vh', width: '100vw', backgroundColor: '#f4f7f6', position: 'absolute', top: 0, left: 0, overflow: 'hidden' }}>
@@ -822,7 +815,21 @@ function App() {
               </div>
             </div>
             
-            <FilterBar />
+            <div style={{ background:'#fff', padding:'12px', borderRadius:'12px', marginBottom:'10px', display:'flex', gap:'10px', alignItems:'center', flexWrap:'wrap', boxShadow:'0 2px 5px rgba(0,0,0,0.05)' }}>
+              <select value={filterCategory} onChange={e => setFilterCategory(e.target.value)} style={{padding:'6px', borderRadius:'6px', border:'1px solid #ddd', fontSize:'12px', flex: isMobile? '1 1 45%' : 'none'}}><option value="전체">복종 전체</option>{categories.map(c => <option key={c} value={c}>{c}</option>)}</select>
+              <select value={filterBrand} onChange={e => setFilterBrand(e.target.value)} style={{padding:'6px', borderRadius:'6px', border:'1px solid #ddd', fontSize:'12px', flex: isMobile? '1 1 45%' : 'none'}}><option value="전체">브랜드 전체</option>{brands.map(b => <option key={b} value={b}>{b}</option>)}</select>
+              <select value={filterSeason} onChange={e => setFilterSeason(e.target.value)} style={{padding:'6px', borderRadius:'6px', border:'1px solid #ddd', fontSize:'12px', flex: isMobile? '1 1 45%' : 'none'}}><option value="전체">시즌 전체</option>{seasons.map(s => <option key={s} value={s}>{s}</option>)}</select>
+              <div style={{ display:'flex', width: isMobile ? '100%' : 'auto', gap:'5px' }}>
+                <input 
+                  placeholder="검색 (품번,상품명) 후 엔터" 
+                  value={searchInput} 
+                  onChange={e => setSearchInput(e.target.value)} 
+                  onKeyDown={e => { if(e.key === 'Enter') setSearchTerm(searchInput); }}
+                  style={{padding:'6px', flex:1, minWidth:'120px', border:'1px solid #ddd', borderRadius:'6px', fontSize:'12px'}} 
+                />
+                <button onClick={() => setSearchTerm(searchInput)} style={{padding:'6px 15px', background:PRIMARY_COLOR, color:'#fff', border:'none', borderRadius:'6px', fontSize:'12px', cursor:'pointer', whiteSpace:'nowrap'}}>조회</button>
+              </div>
+            </div>
 
             <div style={{ background:'#ebf3f9', padding:'8px', borderRadius:'8px', marginBottom:'15px', display:'flex', gap:'8px', alignItems:'center', border:'1px solid #3498db', overflowX:'auto', whiteSpace:'nowrap' }}>
               <strong style={{fontSize:'11px'}}>⚡ 일괄변경 ({selectedCodes.length}):</strong>
@@ -926,21 +933,35 @@ function App() {
                 <button onClick={handleCollapseAll} style={{padding:'6px 10px', background:'#7f8c8d', color:'#fff', border:'none', borderRadius:'4px', fontSize:'11px', cursor:'pointer', fontWeight:'bold'}}>▶ 전체닫기</button>
                 <div style={{width:'1px', background:'#ddd', margin:'0 2px'}}></div>
                 <label style={{fontSize:'11px', display:'flex', alignItems:'center', gap:'5px', cursor:'pointer', background:'#e8f8f5', padding:'6px 12px', borderRadius:'6px', border:'1px solid #1abc9c', color:'#16a085', fontWeight:'bold'}}>
-                  📦 온라인재고 (사전생성)
+                  📦 온라인재고 (사방넷 재고파일)
                   <input type="file" onChange={handleInventoryExcelUpload} style={{display:'none'}} />
                 </label>
                 <label style={{fontSize:'11px', display:'flex', alignItems:'center', gap:'5px', cursor:'pointer', background:'#f4ecf7', padding:'6px 12px', borderRadius:'6px', border:'1px solid #8e44ad', color:'#8e44ad', fontWeight:'bold'}}>
-                  🏢 본사재고 (매핑업뎃)
+                  🏢 본사재고 (ERP 재고파일)
                   <input type="file" onChange={handleHqStockExcelUpload} style={{display:'none'}} />
                 </label>
                 <label style={{fontSize:'11px', display:'flex', alignItems:'center', gap:'5px', cursor:'pointer', background:'#fef5e7', padding:'6px 12px', borderRadius:'6px', border:'1px solid #e67e22', color:'#d35400', fontWeight:'bold'}}>
-                  🛒 발주수량 (매핑업뎃)
+                  🛒 발주수량 (이지어드민 재고파일)
                   <input type="file" onChange={handleOrderExcelUpload} style={{display:'none'}} />
                 </label>
               </div>
             </div>
             
-            <FilterBar />
+            <div style={{ background:'#fff', padding:'12px', borderRadius:'12px', marginBottom:'10px', display:'flex', gap:'10px', alignItems:'center', flexWrap:'wrap', boxShadow:'0 2px 5px rgba(0,0,0,0.05)' }}>
+              <select value={filterCategory} onChange={e => setFilterCategory(e.target.value)} style={{padding:'6px', borderRadius:'6px', border:'1px solid #ddd', fontSize:'12px', flex: isMobile? '1 1 45%' : 'none'}}><option value="전체">복종 전체</option>{categories.map(c => <option key={c} value={c}>{c}</option>)}</select>
+              <select value={filterBrand} onChange={e => setFilterBrand(e.target.value)} style={{padding:'6px', borderRadius:'6px', border:'1px solid #ddd', fontSize:'12px', flex: isMobile? '1 1 45%' : 'none'}}><option value="전체">브랜드 전체</option>{brands.map(b => <option key={b} value={b}>{b}</option>)}</select>
+              <select value={filterSeason} onChange={e => setFilterSeason(e.target.value)} style={{padding:'6px', borderRadius:'6px', border:'1px solid #ddd', fontSize:'12px', flex: isMobile? '1 1 45%' : 'none'}}><option value="전체">시즌 전체</option>{seasons.map(s => <option key={s} value={s}>{s}</option>)}</select>
+              <div style={{ display:'flex', width: isMobile ? '100%' : 'auto', gap:'5px' }}>
+                <input 
+                  placeholder="검색 (품번,상품명) 후 엔터" 
+                  value={searchInput} 
+                  onChange={e => setSearchInput(e.target.value)} 
+                  onKeyDown={e => { if(e.key === 'Enter') setSearchTerm(searchInput); }}
+                  style={{padding:'6px', flex:1, minWidth:'120px', border:'1px solid #ddd', borderRadius:'6px', fontSize:'12px'}} 
+                />
+                <button onClick={() => setSearchTerm(searchInput)} style={{padding:'6px 15px', background:PRIMARY_COLOR, color:'#fff', border:'none', borderRadius:'6px', fontSize:'12px', cursor:'pointer', whiteSpace:'nowrap'}}>조회</button>
+              </div>
+            </div>
 
             <div style={{ background:'#fff', borderRadius:'12px', overflowX:'auto', boxShadow:'0 4px 15px rgba(0,0,0,0.05)', maxHeight: isMobile ? '65vh' : '80vh' }}>
               <table style={{ borderCollapse: 'separate', borderSpacing: 0, width: 'max-content' }}>
