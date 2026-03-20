@@ -122,7 +122,7 @@ function App() {
     const standaloneSingles = matchedSingles.filter(s => !matchedMappedCodes.has(s.code));
     let topLevel = [...matchedGroups, ...standaloneSingles];
 
-    // 💡 [피벗 롤업 로직] 부모(그룹)는 자식들의 숫자를 싹 다 끌어와서 더해줍니다.
+    // 💡 [피벗 롤업 로직] 부모(그룹)는 과거 찌꺼기를 무시하고 오직 자식들의 합계로만 덮어씌웁니다.
     topLevel = topLevel.map(item => {
        let calcItem = { ...item };
        
@@ -132,7 +132,8 @@ function App() {
        calcItem.stock = Number(calcItem.stock || 0);
        calcItem.hq_stock = Number(calcItem.hq_stock || 0);
 
-       if ((calcItem.type === '묶음' || calcItem.type === '세트') && calcItem.children) {
+       // 하위 단품이 1개라도 있는 그룹/세트라면 피벗 롤업 실행!
+       if ((calcItem.type === '묶음' || calcItem.type === '세트') && calcItem.children && calcItem.children.length > 0) {
            let sumW1 = 0, sumW2 = 0, sumW3 = 0, sumStock = 0, sumHqStock = 0;
            calcItem.children.forEach(childSnapshot => {
                const liveChild = masterMap.get(childSnapshot.code);
@@ -145,11 +146,12 @@ function App() {
                sumHqStock += Number(liveChild.hq_stock || 0);
            });
            
-           calcItem.order_w1 += sumW1;
-           calcItem.order_w2 += sumW2;
-           calcItem.order_w3 += sumW3;
-           calcItem.stock += sumStock;       
-           calcItem.hq_stock += sumHqStock; 
+           // DB의 쓰레기 값을 무시하고, 오직 하위 단품의 총합으로 100% 덮어쓰기(=)
+           calcItem.order_w1 = sumW1;
+           calcItem.order_w2 = sumW2;
+           calcItem.order_w3 = sumW3;
+           calcItem.stock = sumStock;       
+           calcItem.hq_stock = sumHqStock; 
        }
        
        calcItem.totalOrder = calcItem.order_w3; 
@@ -322,7 +324,7 @@ function App() {
   };
 
   // ==========================================
-  // 📊 엑셀 처리 함수들 (★스마트 동적 스캔)
+  // 📊 엑셀 처리 함수들 (★ 스마트 동적 스캔)
   // ==========================================
   const handleExcelUpload = async () => {
     if (!selectedFile) return alert("파일을 선택해주세요.");
@@ -381,7 +383,7 @@ function App() {
     reader.readAsBinaryString(file); e.target.value = null;
   };
 
-  // 📦 [Step 1] 완벽 수정본: X열(합재고)만 읽어서 정확히 누적 업데이트 + 바코드 사전 기억!
+  // 📦 [Step 1] 온라인재고: 단품코드(자르지않음)에 X열(재고)와 바코드 사전을 정확히 저장
   const handleInventoryExcelUpload = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
@@ -421,7 +423,7 @@ function App() {
         for (let i = headerRowIndex + 1; i < rows.length; i++) {
           const row = rows[i];
           const cValue = String(row[cIdx] || "").trim();
-          // 💡 [핵심] 오직 X열에서만 진짜 합재고를 읽어옵니다. (1로 바꾸시면 1이 들어갑니다!)
+          // 오직 X열에서만 정확히 숫자를 빼옵니다.
           const xValue = Number(String(row[xIdx] || "0").replace(/,/g, '')) || 0; 
           
           const lValue = lIdx !== -1 ? String(row[lIdx] || "").trim() : "";
@@ -439,7 +441,7 @@ function App() {
 
             if (targetProduct) {
               const mainCode = targetProduct.code;
-              // X열의 값을 해당 품번에 정확하게 더해줍니다.
+              // X열의 값(재고)을 매칭된 품번에 합산
               stockMap[mainCode] = (stockMap[mainCode] || 0) + xValue; 
               
               if (!barcodeMap[mainCode]) barcodeMap[mainCode] = new Set();
@@ -452,7 +454,6 @@ function App() {
           }
         }
 
-        // 💡 [핵심] 모인 데이터를 DB에 "딱 한 번씩만" 안전하게 업데이트합니다. (숫자 지멋대로 변함 방지)
         const updatePromises = [];
         let updatedCount = 0;
 
@@ -473,7 +474,7 @@ function App() {
           }
         }
         await Promise.all(updatePromises);
-        alert(`📦 온라인재고 완벽 업데이트!\n\n✅ 정확히 반영된 품번: ${updatedCount}건\n\n(이제 본사재고 파일을 올리시면 100% 매칭됩니다!)`);
+        alert(`📦 온라인재고 피벗 업데이트 완료!\n\n✅ 정확히 반영된 품번: ${updatedCount}건\n\n(하위 단품에 들어간 수량은 묶음에 자동으로 롤업 합산됩니다!)`);
         fetchData();
       } catch (err) { 
         console.error(err);
@@ -484,7 +485,7 @@ function App() {
     e.target.value = null; 
   };
 
-  // 🏢 [Step 2] 본사재고: 정답지(사전)를 보고 정확히 수량 꽂기!
+  // 🏢 [Step 2] 본사재고: 정답지를 보고 단품에 정확히 수량 꽂기!
   const handleHqStockExcelUpload = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
@@ -557,7 +558,7 @@ function App() {
         }
 
         await Promise.all(updatePromises);
-        alert(`🏢 본사재고 매핑 완료!\n\n✅ 바코드 찾음: ${matchedCount}건\n✅ DB 갱신 품번 수: ${updatedDbCount}품번`);
+        alert(`🏢 본사재고 매핑 완료!\n\n✅ 바코드 찾음: ${matchedCount}건\n✅ 단품 꽂기 성공: ${updatedDbCount}품번\n\n(단품 재고는 상위 그룹에 자동 합산됩니다!)`);
         fetchData();
       } catch (err) {
         console.error(err);
@@ -636,7 +637,7 @@ function App() {
         }
 
         await Promise.all(updatePromises);
-        alert(`🛒 발주 데이터 매핑 완료!\n\n✅ 엑셀에서 찾은 품번: ${matchedCount}건\n✅ DB 갱신 품번 수: ${updatedDbCount}품번`);
+        alert(`🛒 발주 데이터 단품 매핑 완료!\n\n✅ 엑셀에서 찾은 품번: ${matchedCount}건\n✅ 단품 업데이트: ${updatedDbCount}품번`);
         fetchData();
       } catch (err) {
         console.error(err);
@@ -993,15 +994,15 @@ function App() {
                 <button onClick={handleCollapseAll} style={{padding:'6px 10px', background:'#7f8c8d', color:'#fff', border:'none', borderRadius:'4px', fontSize:'11px', cursor:'pointer', fontWeight:'bold'}}>▶ 전체닫기</button>
                 <div style={{width:'1px', background:'#ddd', margin:'0 2px'}}></div>
                 <label style={{fontSize:'11px', display:'flex', alignItems:'center', gap:'5px', cursor:'pointer', background:'#e8f8f5', padding:'6px 12px', borderRadius:'6px', border:'1px solid #1abc9c', color:'#16a085', fontWeight:'bold'}}>
-                  📦 온라인재고 (1.사방넷)
+                  📦 온라인재고 (사전생성)
                   <input type="file" onChange={handleInventoryExcelUpload} style={{display:'none'}} />
                 </label>
                 <label style={{fontSize:'11px', display:'flex', alignItems:'center', gap:'5px', cursor:'pointer', background:'#f4ecf7', padding:'6px 12px', borderRadius:'6px', border:'1px solid #8e44ad', color:'#8e44ad', fontWeight:'bold'}}>
-                  🏢 본사재고 (2.erp)
+                  🏢 본사재고 (매핑업뎃)
                   <input type="file" onChange={handleHqStockExcelUpload} style={{display:'none'}} />
                 </label>
                 <label style={{fontSize:'11px', display:'flex', alignItems:'center', gap:'5px', cursor:'pointer', background:'#fef5e7', padding:'6px 12px', borderRadius:'6px', border:'1px solid #e67e22', color:'#d35400', fontWeight:'bold'}}>
-                  🛒 발주수량 (3.이지어드민)
+                  🛒 발주수량 (매핑업뎃)
                   <input type="file" onChange={handleOrderExcelUpload} style={{display:'none'}} />
                 </label>
               </div>
