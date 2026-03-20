@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import * as XLSX from 'xlsx';
 import Select from 'react-select';
 import { supabase } from './supabaseClient'; 
@@ -39,8 +39,6 @@ function App() {
   });
 
   const [isMobile, setIsMobile] = useState(window.innerWidth <= 768);
-  
-  // 🌟 [신규] 그룹(묶음/세트) 열기/닫기 상태 관리 (접혀있는 그룹 코드 저장)
   const [collapsedGroups, setCollapsedGroups] = useState([]);
 
   // ==========================================
@@ -72,7 +70,7 @@ function App() {
   };
 
   // ==========================================
-  // 3. 유틸리티 및 데이터 가공
+  // 3. 유틸리티 및 데이터 가공 (🚀 useMemo 적용 최적화!)
   // ==========================================
   const handleSort = (key) => {
     let direction = 'asc';
@@ -86,26 +84,16 @@ function App() {
     return curr > orig ? '#2980b9' : '#e74c3c'; 
   };
 
-  const handleSelectAll = (e) => {
-    if (e.target.checked) {
-      if (activeMenu === 'inventory') {
-        setSelectedCodes(getProcessedData().map(item => item.code));
-      } else {
-        setSelectedCodes(getProcessedData().filter(i => !i.isGhost).map(item => item.code));
-      }
-    } else {
-      setSelectedCodes([]);
-    }
-  };
-
-  // 🌟 [신규] 그룹 열기/닫기 토글 함수
   const toggleGroup = (code) => {
-    setCollapsedGroups(prev => 
-      prev.includes(code) ? prev.filter(c => c !== code) : [...prev, code]
-    );
+    setCollapsedGroups(prev => prev.includes(code) ? prev.filter(c => c !== code) : [...prev, code]);
   };
 
-  const getProcessedData = () => {
+  // ✅ 신규 기능: 전체 그룹 일괄 열기/닫기
+  const handleExpandAll = () => setCollapsedGroups([]);
+  const handleCollapseAll = () => setCollapsedGroups(groups.map(g => g.code));
+
+  // 🚀 무거운 계산 로직을 useMemo로 캐싱 (토글 시 재계산 방지)
+  const processedData = useMemo(() => {
     const isMatch = (item) => {
       const matchCat = filterCategory === '전체' || item.category === filterCategory;
       const matchBrand = filterBrand === '전체' || item.brand === filterBrand;
@@ -126,7 +114,6 @@ function App() {
     });
 
     const standaloneSingles = matchedSingles.filter(s => !matchedMappedCodes.has(s.code));
-
     let topLevel = [...matchedGroups, ...standaloneSingles];
 
     topLevel = topLevel.map(item => {
@@ -217,6 +204,18 @@ function App() {
         ratio: cost > 0 ? (sale / cost).toFixed(1) : "0.0", discSale 
       };
     });
+  }, [masterProducts, groups, filterCategory, filterBrand, filterSeason, searchTerm, sortConfig]); // 종속성 목록 (collapsedGroups 제외)
+
+  const handleSelectAll = (e) => {
+    if (e.target.checked) {
+      if (activeMenu === 'inventory') {
+        setSelectedCodes(processedData.map(item => item.code));
+      } else {
+        setSelectedCodes(processedData.filter(i => !i.isGhost).map(item => item.code));
+      }
+    } else {
+      setSelectedCodes([]);
+    }
   };
 
   // ==========================================
@@ -328,7 +327,7 @@ function App() {
   };
 
   const downloadListExcel = () => {
-    let src = activeMenu === 'inventory' ? getProcessedData() : getProcessedData().filter(i => !i.isGhost);
+    let src = activeMenu === 'inventory' ? processedData : processedData.filter(i => !i.isGhost);
     if (selectedCodes.length) src = src.filter(i => selectedCodes.includes(i.code));
     
     const dataToExport = src.map(item => ({
@@ -669,18 +668,15 @@ function App() {
                      value={(groupInput?.children || []).map(c => ({ label: c?.name || '', value: c?.code || '', data: c }))} 
                      onChange={(opts) => setGroupInput({...groupInput, children: opts ? opts.map(o => o.data) : []})} 
                    />
-
                    <div style={{ marginTop: '10px', maxHeight: '120px', overflowY: 'auto', fontSize:'11px', background:'#fff', border:'1px solid #eee', borderRadius:'4px' }}>
                       {groupInput.children.length === 0 && <div style={{padding:'10px', color:'#999', textAlign:'center'}}>선택 상품 없음.</div>}
                       {groupInput.children.map((c, i) => <div key={i} style={{borderBottom:'1px solid #f0f0f0', padding:'6px 8px', display:'flex', justifyContent:'space-between'}}><span>└ {c?.name} ({c?.code})</span><b style={{color:'red', cursor:'pointer'}} onClick={()=>setGroupInput({...groupInput, children: groupInput.children.filter((_,idx)=>idx!==i)})}>삭제</b></div>)}
                    </div>
                 </div>
-                
                 <div style={{display:'flex', gap:'5px'}}>
                   <div style={{flex:1}}><label style={{fontSize:'11px'}}>총 원가</label><input type="number" value={groupInput.cost} onChange={e => setGroupInput({...groupInput, cost: e.target.value})} style={{...inputRegStyle, background:'#fff9db'}} /></div>
                   <div style={{flex:1}}><label style={{fontSize:'11px'}}>총 Tag가</label><input type="number" value={groupInput.tagPrice} onChange={e => setGroupInput({...groupInput, tagPrice: e.target.value})} style={{...inputRegStyle, background:'#fff9db'}} /></div>
                 </div>
-                
                 <button onClick={handleSaveGroup} style={{width:'100%', padding:'12px', background:'#6c5ce7', color:'#fff', border:'none', borderRadius:'6px', fontWeight:'bold', cursor:'pointer', marginTop:'10px'}}>그룹 저장하기</button>
               </div>
             </div>
@@ -693,8 +689,11 @@ function App() {
             <div style={{ display: 'flex', flexDirection: isMobile ? 'column' : 'row', justifyContent: 'space-between', alignItems: isMobile ? 'flex-start' : 'flex-end', marginBottom: '15px', gap: '10px' }}>
               <h2 style={{ margin: 0, fontSize: isMobile?'1.2rem':'1.5rem' }}>💰 가격/마진 시뮬레이션</h2>
               <div style={{ display: 'flex', gap: '8px', background:'#fff', padding:'8px', borderRadius:'8px', boxShadow:'0 2px 5px rgba(0,0,0,0.05)', width: isMobile ? '100%' : 'auto', boxSizing:'border-box', overflowX:'auto', whiteSpace:'nowrap' }}>
-                <button onClick={downloadListExcel} style={{padding:'6px 10px', background:'#27ae60', color:'#fff', border:'none', borderRadius:'4px', fontSize:'11px', cursor:'pointer', fontWeight:'bold'}}>📄 {selectedCodes.length > 0 ? "선택 엑셀" : "전체 엑셀"}</button>
+                {/* ✅ 신규: 전체 펼치기 / 접기 버튼 */}
+                <button onClick={handleExpandAll} style={{padding:'6px 10px', background:'#34495e', color:'#fff', border:'none', borderRadius:'4px', fontSize:'11px', cursor:'pointer', fontWeight:'bold'}}>▼ 전체열기</button>
+                <button onClick={handleCollapseAll} style={{padding:'6px 10px', background:'#7f8c8d', color:'#fff', border:'none', borderRadius:'4px', fontSize:'11px', cursor:'pointer', fontWeight:'bold'}}>▶ 전체닫기</button>
                 <div style={{width:'1px', background:'#ddd', margin:'0 2px'}}></div>
+                <button onClick={downloadListExcel} style={{padding:'6px 10px', background:'#27ae60', color:'#fff', border:'none', borderRadius:'4px', fontSize:'11px', cursor:'pointer', fontWeight:'bold'}}>📄 {selectedCodes.length > 0 ? "선택 엑셀" : "전체 엑셀"}</button>
                 <label style={{fontSize:'11px', display:'flex', alignItems:'center', gap:'5px', cursor:'pointer', background:'#f8f9fa', padding:'4px 8px', borderRadius:'4px', border:'1px solid #ddd'}}>
                   📁 가격/기본수정
                   <input type="file" onChange={handleListExcelUpload} style={{display:'none'}} />
@@ -722,7 +721,7 @@ function App() {
               <table style={{ borderCollapse: 'separate', borderSpacing: 0, width: 'max-content' }}>
                 <thead>
                   <tr style={{ background: '#f8f9fa' }}>
-                    <th style={{ ...thStyle, ...fX(cols.chk.l, true), ...cellS(cols.chk) }}><input type="checkbox" onChange={handleSelectAll} checked={selectedCodes.length > 0 && selectedCodes.length === getProcessedData().filter(i=>!i.isGhost).length} /></th>
+                    <th style={{ ...thStyle, ...fX(cols.chk.l, true), ...cellS(cols.chk) }}><input type="checkbox" onChange={handleSelectAll} checked={selectedCodes.length > 0 && selectedCodes.length === processedData.filter(i=>!i.isGhost).length} /></th>
                     <th style={{ ...thStyle, ...fX(cols.mng.l, true), ...cellS(cols.mng) }}>관리</th>
                     <th style={{ ...thStyle, ...fX(cols.brd.l, true), ...cellS(cols.brd) }} onClick={() => handleSort('brand')}>브랜드</th>
                     <th style={{ ...thStyle, ...fX(cols.sea.l, true), ...cellS(cols.sea) }} onClick={() => handleSort('season')}>시즌</th>
@@ -745,7 +744,7 @@ function App() {
                   </tr>
                 </thead>
                 <tbody>
-                  {getProcessedData().map((item, idx) => {
+                  {processedData.map((item, idx) => {
                     // 💡 [핵심] 토글 기능 구현: 부모가 접혀있으면 숨김
                     if (item.isMappedChild && collapsedGroups.includes(item.parentCode)) return null;
 
@@ -806,6 +805,10 @@ function App() {
               <h2 style={{ margin: 0, fontSize: isMobile?'1.2rem':'1.5rem' }}>📦 재고 및 발주 관리</h2>
               
               <div style={{ display: 'flex', gap: '8px', background:'#fff', padding:'8px', borderRadius:'8px', boxShadow:'0 2px 5px rgba(0,0,0,0.05)', width: isMobile ? '100%' : 'auto', boxSizing:'border-box', overflowX:'auto', whiteSpace:'nowrap' }}>
+                {/* ✅ 신규: 전체 펼치기 / 접기 버튼 */}
+                <button onClick={handleExpandAll} style={{padding:'6px 10px', background:'#34495e', color:'#fff', border:'none', borderRadius:'4px', fontSize:'11px', cursor:'pointer', fontWeight:'bold'}}>▼ 전체열기</button>
+                <button onClick={handleCollapseAll} style={{padding:'6px 10px', background:'#7f8c8d', color:'#fff', border:'none', borderRadius:'4px', fontSize:'11px', cursor:'pointer', fontWeight:'bold'}}>▶ 전체닫기</button>
+                <div style={{width:'1px', background:'#ddd', margin:'0 2px'}}></div>
                 <label style={{fontSize:'11px', display:'flex', alignItems:'center', gap:'5px', cursor:'pointer', background:'#e8f8f5', padding:'6px 12px', borderRadius:'6px', border:'1px solid #1abc9c', color:'#16a085', fontWeight:'bold'}}>
                   📦 온라인재고 (C열-X열)
                   <input type="file" onChange={handleInventoryExcelUpload} style={{display:'none'}} />
@@ -823,7 +826,7 @@ function App() {
               <table style={{ borderCollapse: 'separate', borderSpacing: 0, width: 'max-content' }}>
                 <thead>
                   <tr style={{ background: '#f8f9fa' }}>
-                    <th style={{ ...thStyle, ...fX(cols.chk.l, true), ...cellS(cols.chk) }}><input type="checkbox" onChange={handleSelectAll} checked={selectedCodes.length > 0 && selectedCodes.length === getProcessedData().filter(i=>!i.isGhost).length} /></th>
+                    <th style={{ ...thStyle, ...fX(cols.chk.l, true), ...cellS(cols.chk) }}><input type="checkbox" onChange={handleSelectAll} checked={selectedCodes.length > 0 && selectedCodes.length === processedData.length} /></th>
                     <th style={{ ...thStyle, ...fX(cols.mng.l, true), ...cellS(cols.mng) }}>관리</th>
                     <th style={{ ...thStyle, ...fX(cols.brd.l, true), ...cellS(cols.brd) }} onClick={() => handleSort('brand')}>브랜드</th>
                     <th style={{ ...thStyle, ...fX(cols.sea.l, true), ...cellS(cols.sea) }} onClick={() => handleSort('season')}>시즌</th>
@@ -841,8 +844,7 @@ function App() {
                   </tr>
                 </thead>
                 <tbody>
-                  {getProcessedData().map((item, idx) => {
-                    // 💡 [핵심] 토글 기능 구현: 부모가 접혀있으면 숨김
+                  {processedData.map((item, idx) => {
                     if (item.isMappedChild && collapsedGroups.includes(item.parentCode)) return null;
 
                     const isGhost = item.isGhost;
@@ -862,7 +864,6 @@ function App() {
                         <td style={{ ...tdStyle, ...fX(cols.brd.l), ...cellS(cols.brd), background: trBg }}>{item.brand}</td>
                         <td style={{ ...tdStyle, ...fX(cols.sea.l), ...cellS(cols.sea), background: trBg }}>{item.season}</td>
                         
-                        {/* 💡 [신규 토글 버튼] 그룹일 경우 열기/닫기 아이콘 노출 */}
                         <td style={{ ...tdStyle, ...fX(cols.typ.l), ...cellS(cols.typ), background: trBg, fontWeight: (item.type.includes('묶음')||item.type.includes('세트'))?'bold':'normal' }}>
                           {(item.type.includes('묶음') || item.type.includes('세트')) && (
                             <span onClick={() => toggleGroup(item.code)} style={{cursor:'pointer', marginRight:'4px', display:'inline-block', width:'12px', color:'#6c5ce7'}}>
