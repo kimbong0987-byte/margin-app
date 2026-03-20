@@ -440,7 +440,7 @@ function App() {
   const thStyle = { boxSizing: 'border-box', padding: '4px 4px', background: '#f8f9fa', borderBottom: '2px solid #ddd', borderRight: '1px solid #eee', fontSize: '11px', fontWeight: 'bold', position: 'sticky', top: 0, zIndex: 10, whiteSpace: 'nowrap', textAlign: 'center', cursor: 'pointer', overflow: 'hidden' };
   const tdStyle = { boxSizing: 'border-box', padding: '3px 4px', borderBottom: '1px solid #eee', borderRight: '1px solid #f9f9f9', fontSize: '11px', whiteSpace: 'nowrap', textAlign: 'center', overflow: 'hidden', textOverflow: 'ellipsis' };
   
-  // ✅ 상품명 450px 확장 및 틀고정(Sticky) 좌표 완벽 적용
+  // ✅ 상품명 320px 조정 및 틀고정(Sticky) 좌표 재계산
   const cols = {
     chk: { w: 26,  l: 0 },
     mng: { w: 36,  l: 26 },
@@ -450,9 +450,9 @@ function App() {
     cod: { w: 80,  l: 252 },
     cat: { w: 60,  l: 332 },
     sty: { w: 130, l: 392 },
-    nam: { w: 310, l: 522 }, // 상품명 310px 확보!
-    cst: { w: 60,  l: 972 }, // 522 + 450 = 972
-    tag: { w: 65,  l: 1032 },// 972 + 60 = 1032
+    nam: { w: 320, l: 522 }, // 상품명 320px로 조정
+    cst: { w: 60,  l: 842 }, // 522 + 320 = 842 (원가 밀림 좌표)
+    tag: { w: 65,  l: 902 }, // 842 + 60 = 902 (Tag가 밀림 좌표)
   };
 
   const fX = (left, isHeader = false) => ({ position: 'sticky', left: `${left}px`, zIndex: isHeader ? 20 : 10, background: isHeader ? '#f8f9fa' : 'inherit' });
