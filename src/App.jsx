@@ -114,7 +114,6 @@ function App() {
     matchedGroups.forEach(g => {
       if (g.children) {
         g.children.forEach(c => {
-          // 💡 유령 방지: DB에 실제 존재하는 자식만 Mapped로 인정
           if (masterMap.has(c.code)) matchedMappedCodes.add(c.code);
         });
       }
@@ -136,7 +135,6 @@ function App() {
            let sumW1 = 0, sumW2 = 0, sumW3 = 0, sumStock = 0, sumHqStock = 0;
            calcItem.children.forEach(childSnapshot => {
                const liveChild = masterMap.get(childSnapshot.code);
-               // 💡 핵심 1: 삭제된 단품은 계산에서 즉시 제외!
                if (!liveChild) return; 
 
                sumW1 += Number(liveChild.order_w1 || 0);
@@ -182,7 +180,6 @@ function App() {
       if ((item.type === '묶음' || item.type === '세트') && item.children) {
         item.children.forEach(childSnapshot => {
           const liveChild = masterMap.get(childSnapshot.code);
-          // 💡 핵심 2: 삭제된 단품은 화면 리스트(DOM)에서도 아예 안 보이게 차단!
           if (!liveChild) return; 
 
           const isGhost = renderedChildCodes.has(liveChild.code);
@@ -260,7 +257,6 @@ function App() {
     fetchData();
   };
 
-  // 💡 그룹 저장도 무조건 덮어쓰기(upsert)로 변경 (재매핑 적용 위함)
   const handleSaveGroup = async () => {
     await supabase.from('groups').upsert([{ 
       brand: groupInput.brand, season: groupInput.season, type: groupInput.type, category: groupInput.category, 
@@ -425,6 +421,64 @@ function App() {
         alert(`📦 온라인재고 업데이트 성공!\n(총 ${updatedCount}개 품번의 재고가 반영되었습니다.)`);
         fetchData();
       } catch (err) { alert("❌ 재고 엑셀 처리 중 오류가 발생했습니다."); }
+    };
+    reader.readAsBinaryString(file);
+    e.target.value = null; 
+  };
+
+  // 🏢 [핵심 신규] 본사재고 C열(상품바코드) - N열(실재고) 매핑 로직
+  const handleHqStockExcelUpload = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = async (ev) => {
+      try {
+        const workbook = XLSX.read(ev.target.result, { type: 'binary' });
+        const sheet = workbook.Sheets[workbook.SheetNames[0]];
+        // 강제로 A, B, C 열 지정 (1행이 불필요한 데이터라도 무시)
+        const rows = XLSX.utils.sheet_to_json(sheet, { header: "A", defval: "" });
+
+        const hqMap = {}; 
+
+        rows.forEach(row => {
+          const cValue = String(row["C"] || "").trim(); // 상품바코드 (예: CB3JMURH13BK085)
+          const nValue = Number(row["N"]) || 0;         // 실재고
+
+          if (cValue && cValue !== "상품바코드") {
+            // DB의 style_no 또는 code가 엑셀의 C열(바코드)에 포함되어 있는지 확인
+            const targetProduct = masterProducts.find(p => 
+              (p.style_no && cValue.includes(p.style_no)) || 
+              (p.code && cValue.includes(p.code))
+            );
+
+            if (targetProduct) {
+              const mainCode = targetProduct.code;
+              hqMap[mainCode] = (hqMap[mainCode] || 0) + nValue;
+            }
+          }
+        });
+
+        const updatePromises = [];
+        let updatedCount = 0;
+
+        for (const [code, stockVal] of Object.entries(hqMap)) {
+          const isGroup = groups.some(g => g.code === code);
+          const targetTable = isGroup ? 'groups' : 'master_products';
+
+          updatePromises.push(
+            supabase.from(targetTable).update({ hq_stock: stockVal }).eq('code', code)
+          );
+          updatedCount++;
+        }
+
+        await Promise.all(updatePromises);
+        alert(`🏢 본사재고 데이터 업데이트 성공!\n(총 ${updatedCount}개 품번의 재고 수량이 합산 매핑되었습니다.)`);
+        fetchData();
+      } catch (err) {
+        console.error(err);
+        alert("❌ 본사재고 엑셀 처리 중 오류가 발생했습니다. 파일 형식을 확인해주세요.");
+      }
     };
     reader.readAsBinaryString(file);
     e.target.value = null; 
@@ -649,7 +703,6 @@ function App() {
               <div style={{ background: '#fff', padding: '20px', borderRadius: '12px', borderLeft: `5px solid #6c5ce7`, boxShadow: '0 4px 10px rgba(0,0,0,0.05)' }}>
                 <h3 style={{ color: '#6c5ce7', marginBottom: '15px', fontSize: isMobile?'1rem':'1.17em' }}>📦 2. 그룹/세트 최종 구성</h3>
                 
-                {/* 💡 신규 기능: 기존 그룹 불러오기 및 재매핑 */}
                 <Select 
                   placeholder="기존 그룹 불러오기 및 재매핑..." 
                   options={(groups || []).map(g => ({ label: `[${g.type}] [${g.code}] ${g.name}`, data: g }))} 
@@ -727,7 +780,7 @@ function App() {
               </div>
             </div>
             
-            {/* 🚀 검색창 분리 고정 (커서 풀림 원천 차단) */}
+            {/* 🚀 분리 및 고정된 검색 필터 바 */}
             <div style={{ background:'#fff', padding:'12px', borderRadius:'12px', marginBottom:'10px', display:'flex', gap:'10px', alignItems:'center', flexWrap:'wrap', boxShadow:'0 2px 5px rgba(0,0,0,0.05)' }}>
               <select value={filterCategory} onChange={e => setFilterCategory(e.target.value)} style={{padding:'6px', borderRadius:'6px', border:'1px solid #ddd', fontSize:'12px', flex: isMobile? '1 1 45%' : 'none'}}><option value="전체">복종 전체</option>{categories.map(c => <option key={c} value={c}>{c}</option>)}</select>
               <select value={filterBrand} onChange={e => setFilterBrand(e.target.value)} style={{padding:'6px', borderRadius:'6px', border:'1px solid #ddd', fontSize:'12px', flex: isMobile? '1 1 45%' : 'none'}}><option value="전체">브랜드 전체</option>{brands.map(b => <option key={b} value={b}>{b}</option>)}</select>
@@ -849,6 +902,10 @@ function App() {
                   📦 온라인재고 (C열-X열)
                   <input type="file" onChange={handleInventoryExcelUpload} style={{display:'none'}} />
                 </label>
+                <label style={{fontSize:'11px', display:'flex', alignItems:'center', gap:'5px', cursor:'pointer', background:'#f4ecf7', padding:'6px 12px', borderRadius:'6px', border:'1px solid #8e44ad', color:'#8e44ad', fontWeight:'bold'}}>
+                  🏢 본사재고 (C/N열)
+                  <input type="file" onChange={handleHqStockExcelUpload} style={{display:'none'}} />
+                </label>
                 <label style={{fontSize:'11px', display:'flex', alignItems:'center', gap:'5px', cursor:'pointer', background:'#fef5e7', padding:'6px 12px', borderRadius:'6px', border:'1px solid #e67e22', color:'#d35400', fontWeight:'bold'}}>
                   🛒 발주수량 (A/K/L/M열)
                   <input type="file" onChange={handleOrderExcelUpload} style={{display:'none'}} />
@@ -856,7 +913,7 @@ function App() {
               </div>
             </div>
             
-            {/* 🚀 검색창 분리 고정 */}
+            {/* 🚀 분리 및 고정된 검색 필터 바 */}
             <div style={{ background:'#fff', padding:'12px', borderRadius:'12px', marginBottom:'10px', display:'flex', gap:'10px', alignItems:'center', flexWrap:'wrap', boxShadow:'0 2px 5px rgba(0,0,0,0.05)' }}>
               <select value={filterCategory} onChange={e => setFilterCategory(e.target.value)} style={{padding:'6px', borderRadius:'6px', border:'1px solid #ddd', fontSize:'12px', flex: isMobile? '1 1 45%' : 'none'}}><option value="전체">복종 전체</option>{categories.map(c => <option key={c} value={c}>{c}</option>)}</select>
               <select value={filterBrand} onChange={e => setFilterBrand(e.target.value)} style={{padding:'6px', borderRadius:'6px', border:'1px solid #ddd', fontSize:'12px', flex: isMobile? '1 1 45%' : 'none'}}><option value="전체">브랜드 전체</option>{brands.map(b => <option key={b} value={b}>{b}</option>)}</select>
