@@ -18,7 +18,7 @@ function App() {
   const [newSeasonInput, setNewSeasonInput] = useState('');
   const [selectedFile, setSelectedFile] = useState(null);
 
-  // 🚀 검색창 최적화: 입력 중인 상태와 실제 적용된 상태를 분리
+  // 🚀 검색 최적화: 치는 동안의 글자(searchInput)와 실제 검색할 글자(searchTerm) 분리
   const [searchInput, setSearchInput] = useState(''); 
   const [searchTerm, setSearchTerm] = useState('');
 
@@ -73,7 +73,7 @@ function App() {
   };
 
   // ==========================================
-  // 3. 유틸리티 및 데이터 가공 (🚀 알고리즘 최적화)
+  // 3. 유틸리티 및 데이터 가공 (🚀 캐싱 & 빠른 탐색)
   // ==========================================
   const handleSort = (key) => {
     let direction = 'asc';
@@ -94,9 +94,7 @@ function App() {
   const handleExpandAll = () => setCollapsedGroups([]);
   const handleCollapseAll = () => setCollapsedGroups(groups.map(g => g.code));
 
-  // 🚀 핵심 최적화: 캐싱 및 O(N) 해시맵 탐색 적용
   const processedData = useMemo(() => {
-    // 1. 초고속 탐색을 위한 해시맵(Map) 생성
     const masterMap = new Map();
     masterProducts.forEach(p => masterMap.set(p.code, p));
 
@@ -135,7 +133,6 @@ function App() {
        if ((calcItem.type === '묶음' || calcItem.type === '세트') && calcItem.children) {
            let sumW1 = 0, sumW2 = 0, sumW3 = 0, sumStock = 0, sumHqStock = 0;
            calcItem.children.forEach(childSnapshot => {
-               // 🚀 여기서 masterProducts.find()를 제거하고 0.001초만에 찾는 Map 적용
                const liveChild = masterMap.get(childSnapshot.code) || childSnapshot;
                sumW1 += Number(liveChild.order_w1 || 0);
                sumW2 += Number(liveChild.order_w2 || 0);
@@ -179,7 +176,6 @@ function App() {
       expandedResult.push(item);
       if ((item.type === '묶음' || item.type === '세트') && item.children) {
         item.children.forEach(childSnapshot => {
-          // 🚀 여기도 초고속 탐색 Map 적용
           const liveChild = masterMap.get(childSnapshot.code) || childSnapshot;
           const isGhost = renderedChildCodes.has(liveChild.code);
           
@@ -219,7 +215,6 @@ function App() {
     });
   }, [masterProducts, groups, filterCategory, filterBrand, filterSeason, searchTerm, sortConfig]);
 
-  // 🚀 렌더링 최적화: 닫혀있는 하위 그룹은 아예 배열에서 빼버림
   const visibleData = useMemo(() => {
     return processedData.filter(item => !(item.isMappedChild && collapsedGroups.includes(item.parentCode)));
   }, [processedData, collapsedGroups]);
@@ -553,25 +548,6 @@ function App() {
     cursor: 'pointer', backgroundColor: active ? PRIMARY_COLOR : 'transparent', color: active ? '#fff' : '#b2bec3', border: active ? 'none' : '1px solid #455a64', gap: isMobile ? '5px' : '0'
   });
 
-  const FilterBar = () => (
-    <div style={{ background:'#fff', padding:'12px', borderRadius:'12px', marginBottom:'10px', display:'flex', gap:'10px', alignItems:'center', flexWrap:'wrap', boxShadow:'0 2px 5px rgba(0,0,0,0.05)' }}>
-      <select value={filterCategory} onChange={e => setFilterCategory(e.target.value)} style={{padding:'6px', borderRadius:'6px', border:'1px solid #ddd', fontSize:'12px', flex: isMobile? '1 1 45%' : 'none'}}><option value="전체">복종 전체</option>{categories.map(c => <option key={c} value={c}>{c}</option>)}</select>
-      <select value={filterBrand} onChange={e => setFilterBrand(e.target.value)} style={{padding:'6px', borderRadius:'6px', border:'1px solid #ddd', fontSize:'12px', flex: isMobile? '1 1 45%' : 'none'}}><option value="전체">브랜드 전체</option>{brands.map(b => <option key={b} value={b}>{b}</option>)}</select>
-      <select value={filterSeason} onChange={e => setFilterSeason(e.target.value)} style={{padding:'6px', borderRadius:'6px', border:'1px solid #ddd', fontSize:'12px', flex: isMobile? '1 1 45%' : 'none'}}><option value="전체">시즌 전체</option>{seasons.map(s => <option key={s} value={s}>{s}</option>)}</select>
-      <div style={{ display:'flex', width: isMobile ? '100%' : 'auto', gap:'5px' }}>
-        {/* 🚀 검색창 최적화: 타이핑 중에는 상태만 변경, 엔터 칠 때만 필터 적용! */}
-        <input 
-          placeholder="검색 (품번,상품명) 후 엔터" 
-          value={searchInput} 
-          onChange={e => setSearchInput(e.target.value)} 
-          onKeyDown={e => { if(e.key === 'Enter') { setSearchTerm(searchInput); fetchData(); } }}
-          style={{padding:'6px', flex:1, minWidth:'120px', border:'1px solid #ddd', borderRadius:'6px', fontSize:'12px'}} 
-        />
-        <button onClick={() => { setSearchTerm(searchInput); fetchData(); }} style={{padding:'6px 15px', background:PRIMARY_COLOR, color:'#fff', border:'none', borderRadius:'6px', fontSize:'12px', cursor:'pointer', whiteSpace:'nowrap'}}>조회</button>
-      </div>
-    </div>
-  );
-
   return (
     <div style={{ display: 'flex', flexDirection: isMobile ? 'column' : 'row', minHeight: '100vh', width: '100vw', backgroundColor: '#f4f7f6', position: 'absolute', top: 0, left: 0, overflow: 'hidden' }}>
       
@@ -725,7 +701,22 @@ function App() {
               </div>
             </div>
             
-            <FilterBar />
+            {/* 🚀 검색/필터 영역 (커서 안풀리도록 직접 배치) */}
+            <div style={{ background:'#fff', padding:'12px', borderRadius:'12px', marginBottom:'10px', display:'flex', gap:'10px', alignItems:'center', flexWrap:'wrap', boxShadow:'0 2px 5px rgba(0,0,0,0.05)' }}>
+              <select value={filterCategory} onChange={e => setFilterCategory(e.target.value)} style={{padding:'6px', borderRadius:'6px', border:'1px solid #ddd', fontSize:'12px', flex: isMobile? '1 1 45%' : 'none'}}><option value="전체">복종 전체</option>{categories.map(c => <option key={c} value={c}>{c}</option>)}</select>
+              <select value={filterBrand} onChange={e => setFilterBrand(e.target.value)} style={{padding:'6px', borderRadius:'6px', border:'1px solid #ddd', fontSize:'12px', flex: isMobile? '1 1 45%' : 'none'}}><option value="전체">브랜드 전체</option>{brands.map(b => <option key={b} value={b}>{b}</option>)}</select>
+              <select value={filterSeason} onChange={e => setFilterSeason(e.target.value)} style={{padding:'6px', borderRadius:'6px', border:'1px solid #ddd', fontSize:'12px', flex: isMobile? '1 1 45%' : 'none'}}><option value="전체">시즌 전체</option>{seasons.map(s => <option key={s} value={s}>{s}</option>)}</select>
+              <div style={{ display:'flex', width: isMobile ? '100%' : 'auto', gap:'5px' }}>
+                <input 
+                  placeholder="검색 (품번,상품명) 후 엔터" 
+                  value={searchInput} 
+                  onChange={e => setSearchInput(e.target.value)} 
+                  onKeyDown={e => { if(e.key === 'Enter') setSearchTerm(searchInput); }}
+                  style={{padding:'6px', flex:1, minWidth:'120px', border:'1px solid #ddd', borderRadius:'6px', fontSize:'12px'}} 
+                />
+                <button onClick={() => setSearchTerm(searchInput)} style={{padding:'6px 15px', background:PRIMARY_COLOR, color:'#fff', border:'none', borderRadius:'6px', fontSize:'12px', cursor:'pointer', whiteSpace:'nowrap'}}>조회</button>
+              </div>
+            </div>
 
             <div style={{ background:'#ebf3f9', padding:'8px', borderRadius:'8px', marginBottom:'15px', display:'flex', gap:'8px', alignItems:'center', border:'1px solid #3498db', overflowX:'auto', whiteSpace:'nowrap' }}>
               <strong style={{fontSize:'11px'}}>⚡ 일괄변경 ({selectedCodes.length}):</strong>
@@ -768,7 +759,6 @@ function App() {
                   </tr>
                 </thead>
                 <tbody>
-                  {/* 🚀 렌더링 최적화: visibleData를 매핑하여 숨겨진 항목의 DOM 생성을 차단! */}
                   {visibleData.map((item, idx) => {
                     const isGhost = item.isGhost;
                     const isE = editingCode === item.code && !isGhost;
@@ -840,7 +830,22 @@ function App() {
               </div>
             </div>
             
-            <FilterBar />
+            {/* 🚀 검색/필터 영역 (커서 안풀리도록 직접 배치) */}
+            <div style={{ background:'#fff', padding:'12px', borderRadius:'12px', marginBottom:'10px', display:'flex', gap:'10px', alignItems:'center', flexWrap:'wrap', boxShadow:'0 2px 5px rgba(0,0,0,0.05)' }}>
+              <select value={filterCategory} onChange={e => setFilterCategory(e.target.value)} style={{padding:'6px', borderRadius:'6px', border:'1px solid #ddd', fontSize:'12px', flex: isMobile? '1 1 45%' : 'none'}}><option value="전체">복종 전체</option>{categories.map(c => <option key={c} value={c}>{c}</option>)}</select>
+              <select value={filterBrand} onChange={e => setFilterBrand(e.target.value)} style={{padding:'6px', borderRadius:'6px', border:'1px solid #ddd', fontSize:'12px', flex: isMobile? '1 1 45%' : 'none'}}><option value="전체">브랜드 전체</option>{brands.map(b => <option key={b} value={b}>{b}</option>)}</select>
+              <select value={filterSeason} onChange={e => setFilterSeason(e.target.value)} style={{padding:'6px', borderRadius:'6px', border:'1px solid #ddd', fontSize:'12px', flex: isMobile? '1 1 45%' : 'none'}}><option value="전체">시즌 전체</option>{seasons.map(s => <option key={s} value={s}>{s}</option>)}</select>
+              <div style={{ display:'flex', width: isMobile ? '100%' : 'auto', gap:'5px' }}>
+                <input 
+                  placeholder="검색 (품번,상품명) 후 엔터" 
+                  value={searchInput} 
+                  onChange={e => setSearchInput(e.target.value)} 
+                  onKeyDown={e => { if(e.key === 'Enter') setSearchTerm(searchInput); }}
+                  style={{padding:'6px', flex:1, minWidth:'120px', border:'1px solid #ddd', borderRadius:'6px', fontSize:'12px'}} 
+                />
+                <button onClick={() => setSearchTerm(searchInput)} style={{padding:'6px 15px', background:PRIMARY_COLOR, color:'#fff', border:'none', borderRadius:'6px', fontSize:'12px', cursor:'pointer', whiteSpace:'nowrap'}}>조회</button>
+              </div>
+            </div>
 
             <div style={{ background:'#fff', borderRadius:'12px', overflowX:'auto', boxShadow:'0 4px 15px rgba(0,0,0,0.05)', maxHeight: isMobile ? '65vh' : '80vh' }}>
               <table style={{ borderCollapse: 'separate', borderSpacing: 0, width: 'max-content' }}>
@@ -864,6 +869,7 @@ function App() {
                   </tr>
                 </thead>
                 <tbody>
+                  {/* 🚀 렌더링 최적화: visibleData를 매핑하여 숨겨진 항목의 DOM 생성을 차단! */}
                   {visibleData.map((item, idx) => {
                     const isGhost = item.isGhost;
                     const isE = editingCode === item.code; 
