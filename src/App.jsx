@@ -69,7 +69,7 @@ function App() {
   };
 
   // ==========================================
-  // 3. 유틸리티 및 데이터 가공 (★핵심 수정 부분)
+  // 3. 유틸리티 및 데이터 가공 (★ 정렬 로직 완벽 연동)
   // ==========================================
   const handleSort = (key) => {
     let direction = 'asc';
@@ -84,8 +84,13 @@ function App() {
   };
 
   const handleSelectAll = (e) => {
+    // 3번 메뉴에서는 전체 선택 시 Ghost 여부와 상관없이 모두 선택!
     if (e.target.checked) {
-      setSelectedCodes(getProcessedData().filter(i => !i.isGhost).map(item => item.code));
+      if (activeMenu === 'inventory') {
+        setSelectedCodes(getProcessedData().map(item => item.code));
+      } else {
+        setSelectedCodes(getProcessedData().filter(i => !i.isGhost).map(item => item.code));
+      }
     } else {
       setSelectedCodes([]);
     }
@@ -114,9 +119,44 @@ function App() {
     const standaloneSingles = matchedSingles.filter(s => !matchedMappedCodes.has(s.code));
 
     let topLevel = [...matchedGroups, ...standaloneSingles];
+
+    // 💡 [정렬 전 계산 로직] 모든 합산 데이터와 마진을 먼저 계산해야 클릭 시 정렬이 가능합니다.
+    topLevel = topLevel.map(item => {
+       let calcItem = { ...item };
+       let orderW1 = Number(calcItem.order_w1 || 0);
+       let orderW2 = Number(calcItem.order_w2 || 0);
+       let orderW3 = Number(calcItem.order_w3 || 0);
+
+       if ((calcItem.type === '묶음' || calcItem.type === '세트') && calcItem.children) {
+           let sumW1 = 0, sumW2 = 0, sumW3 = 0;
+           calcItem.children.forEach(childSnapshot => {
+               const liveChild = masterProducts.find(p => p.code === childSnapshot.code) || childSnapshot;
+               sumW1 += Number(liveChild.order_w1 || 0);
+               sumW2 += Number(liveChild.order_w2 || 0);
+               sumW3 += Number(liveChild.order_w3 || 0);
+           });
+           orderW1 += sumW1;
+           orderW2 += sumW2;
+           orderW3 += sumW3;
+       }
+       calcItem.order_w1 = orderW1;
+       calcItem.order_w2 = orderW2;
+       calcItem.order_w3 = orderW3;
+       calcItem.totalOrder = orderW3; // 총 발주합계 = 3주차 수량
+       calcItem.stock = Number(calcItem.stock || 0);
+       calcItem.hq_stock = Number(calcItem.hq_stock || 0);
+       
+       const cost = Number(calcItem.cost || 0);
+       const sale = Number(calcItem.price_sale || 0);
+       calcItem.margin = (sale - Math.floor(sale * 0.18)) - cost - 5000;
+
+       return calcItem;
+    });
+
+    // 이제 계산이 끝났으니 안전하게 정렬!
     topLevel.sort((a, b) => {
       let vA = a[sortConfig.key]; let vB = b[sortConfig.key];
-      if (['cost', 'tag_price', 'price_sale', 'margin', 'stock', 'totalOrder'].includes(sortConfig.key)) { 
+      if (['cost', 'tag_price', 'price_sale', 'margin', 'stock', 'hq_stock', 'order_w1', 'order_w2', 'order_w3', 'totalOrder'].includes(sortConfig.key)) { 
         vA = Number(vA || 0); vB = Number(vB || 0); 
       } else { 
         vA = String(vA || "").toLowerCase(); vB = String(vB || "").toLowerCase(); 
@@ -130,47 +170,28 @@ function App() {
     const renderedChildCodes = new Set();
 
     topLevel.forEach(item => {
-      let currentItem = { ...item }; // 객체를 복사하여 원본 훼손 방지
-      const childrenRows = [];
-
-      // 💡 [핵심 로직] 묶음/세트인 경우 하위 단품의 발주수량을 합산합니다.
-      if ((currentItem.type === '묶음' || currentItem.type === '세트') && currentItem.children) {
-        let sumW1 = 0, sumW2 = 0, sumW3 = 0;
-
-        currentItem.children.forEach(childSnapshot => {
+      expandedResult.push(item);
+      if ((item.type === '묶음' || item.type === '세트') && item.children) {
+        item.children.forEach(childSnapshot => {
           const liveChild = masterProducts.find(p => p.code === childSnapshot.code) || childSnapshot;
           const isGhost = renderedChildCodes.has(liveChild.code);
           
-          // 단품(자식)의 1~3주차 발주 수량을 부모 합계에 더하기
-          sumW1 += Number(liveChild.order_w1 || 0);
-          sumW2 += Number(liveChild.order_w2 || 0);
-          sumW3 += Number(liveChild.order_w3 || 0);
-
-          childrenRows.push({ 
+          expandedResult.push({ 
             ...liveChild,
-            brand: liveChild.brand || currentItem.brand,
-            season: liveChild.season || currentItem.season,
-            category: liveChild.category || currentItem.category,
+            brand: liveChild.brand || item.brand,
+            season: liveChild.season || item.season,
+            category: liveChild.category || item.category,
             type: 'ㄴ 구성', 
             isMappedChild: true, 
-            parentCode: currentItem.code,
-            isGhost: isGhost 
+            parentCode: item.code,
+            isGhost: isGhost,
+            totalOrder: Number(liveChild.order_w3 || 0)
           });
 
           if (!isGhost) {
             renderedChildCodes.add(liveChild.code);
           }
         });
-
-        // 합산된 값을 그룹 상품(부모)의 수량에 덮어씌움 (기존 값이 있다면 더함)
-        currentItem.order_w1 = Number(currentItem.order_w1 || 0) + sumW1;
-        currentItem.order_w2 = Number(currentItem.order_w2 || 0) + sumW2;
-        currentItem.order_w3 = Number(currentItem.order_w3 || 0) + sumW3;
-      }
-
-      expandedResult.push(currentItem);
-      if (childrenRows.length > 0) {
-        expandedResult.push(...childrenRows);
       }
     });
 
@@ -178,27 +199,14 @@ function App() {
       const cost = Number(item.cost || 0); 
       const tag = Number(item.tag_price || 0);
       const sale = Number(item.price_sale || 0); 
-      
-      const stock = Number(item.stock || 0);
-      const hqStock = Number(item.hq_stock || 0);
-      
-      // 이미 위에서 자식들 합산 처리를 마친 수량들
-      const orderW1 = Number(item.order_w1 || 0);
-      const orderW2 = Number(item.order_w2 || 0);
-      const orderW3 = Number(item.order_w3 || 0);
-      
-      // 누적 방식: 총 발주합계는 3주차 수량 그대로 사용!
-      const totalOrder = orderW3; 
-
       const fee = Math.floor(sale * 0.18); 
       const settle = sale - fee; 
-      const margin = settle - cost - 5000;
       const pSale = Number(item.prev_sale || item.price_sale || 0);
       const pMargin = (pSale - Math.floor(pSale * 0.18)) - cost - 5000;
       const discSale = tag === 0 ? 0 : Math.round((1 - (sale / tag)) * 100);
       
       return { 
-        ...item, fee, settle, margin, prevMargin: pMargin, stock, hqStock, orderW1, orderW2, orderW3, totalOrder,
+        ...item, fee, settle, prevMargin: pMargin,
         ratio: cost > 0 ? (sale / cost).toFixed(1) : "0.0", discSale 
       };
     });
@@ -244,7 +252,10 @@ function App() {
       price_coupang: Number(editRow.price_coupang||0), price_rocket: Number(editRow.price_rocket||0), 
       price_gold: Number(editRow.price_gold||0), price_sale: Number(editRow.price_sale || 0),
       stock: Number(editRow.stock || 0),
-      hq_stock: Number(editRow.hqStock || 0),
+      hq_stock: Number(editRow.hq_stock || 0),
+      order_w1: Number(editRow.order_w1 || 0),
+      order_w2: Number(editRow.order_w2 || 0),
+      order_w3: Number(editRow.order_w3 || 0),
       prev_naver: Number(item.price_naver || 0), prev_sale: Number(item.price_sale || 0)
     }).eq('code', editingCode);
     
@@ -310,13 +321,15 @@ function App() {
   };
 
   const downloadListExcel = () => {
-    let src = getProcessedData().filter(i => !i.isGhost);
+    // 3번 메뉴일 땐 고스트(중복) 여부 상관없이 엑셀 다운로드 허용
+    let src = activeMenu === 'inventory' ? getProcessedData() : getProcessedData().filter(i => !i.isGhost);
     if (selectedCodes.length) src = src.filter(i => selectedCodes.includes(i.code));
     
     const dataToExport = src.map(item => ({
       "구분": item.type, "품번": item.code, "브랜드": item.brand || '', "시즌": item.season || '',
       "복종": item.category || '', "스타일코드": item.style_no || '', "상품명": item.name || '',
-      "원가": item.cost || 0, "Tag가": item.tag_price || 0, "온라인재고": item.stock || 0,
+      "원가": item.cost || 0, "Tag가": item.tag_price || 0, "온라인재고": item.stock || 0, "본사재고": item.hq_stock || 0,
+      "1주발주": item.order_w1 || 0, "2주발주": item.order_w2 || 0, "3주발주": item.order_w3 || 0, "총 발주합계": item.totalOrder || 0,
       "네이버(변경)": item.price_naver || 0, "쿠팡(변경)": item.price_coupang || 0, 
       "로켓(변경)": item.price_rocket || 0, "골드(변경)": item.price_gold || 0, "행사가(변경)": item.price_sale || 0
     }));
@@ -474,7 +487,7 @@ function App() {
   const PRIMARY_COLOR = '#3498db';
   const GHOST_COLOR = '#bdc3c7'; 
 
-  const thStyle = { boxSizing: 'border-box', padding: '4px', background: '#f8f9fa', borderBottom: '2px solid #ddd', borderRight: '1px solid #eee', fontSize: '11px', fontWeight: 'bold', position: 'sticky', top: 0, zIndex: 10, whiteSpace: 'nowrap', textAlign: 'center' };
+  const thStyle = { boxSizing: 'border-box', padding: '4px', background: '#f8f9fa', borderBottom: '2px solid #ddd', borderRight: '1px solid #eee', fontSize: '11px', fontWeight: 'bold', position: 'sticky', top: 0, zIndex: 10, whiteSpace: 'nowrap', textAlign: 'center', cursor:'pointer' };
   const tdStyle = { boxSizing: 'border-box', padding: '3px 4px', borderBottom: '1px solid #eee', borderRight: '1px solid #f9f9f9', fontSize: '11px', whiteSpace: 'nowrap', textAlign: 'center', overflow: 'hidden', textOverflow: 'ellipsis' };
   
   const cols = {
@@ -712,19 +725,20 @@ function App() {
                     <th style={{ ...thStyle, ...fX(cols.nam.l, true), ...cellS(cols.nam), textAlign:'left' }} onClick={() => handleSort('name')}>상품명</th>
                     <th style={{ ...thStyle, ...fX(cols.cst.l, true), ...cellS(cols.cst) }} onClick={() => handleSort('cost')}>원가</th>
                     <th style={{ ...thStyle, ...fX(cols.tag.l, true), ...cellS(cols.tag), borderRight: '2px solid #aaa' }} onClick={() => handleSort('tag_price')}>Tag가</th>
-                    <th style={{...thStyle, width:'105px'}}>네이버 (이전→변경)</th>
-                    <th style={{...thStyle, width:'105px'}}>쿠팡 (이전→변경)</th>
-                    <th style={{...thStyle, width:'105px'}}>로켓 (이전→변경)</th>
-                    <th style={{...thStyle, width:'105px'}}>골드 (이전→변경)</th>
-                    <th style={{...thStyle, width:'115px', color:'#e17055', background:'#fff9f9'}}>행사가 (이전→변경)</th>
+                    <th style={{...thStyle, width:'105px'}} onClick={() => handleSort('price_naver')}>네이버 (이전→변경)</th>
+                    <th style={{...thStyle, width:'105px'}} onClick={() => handleSort('price_coupang')}>쿠팡 (이전→변경)</th>
+                    <th style={{...thStyle, width:'105px'}} onClick={() => handleSort('price_rocket')}>로켓 (이전→변경)</th>
+                    <th style={{...thStyle, width:'105px'}} onClick={() => handleSort('price_gold')}>골드 (이전→변경)</th>
+                    <th style={{...thStyle, width:'115px', color:'#e17055', background:'#fff9f9'}} onClick={() => handleSort('price_sale')}>행사가 (이전→변경)</th>
                     <th style={{...thStyle, width:'50px'}}>수수료</th>
                     <th style={{...thStyle, width:'55px'}}>정산액</th>
                     <th style={{...thStyle, width:'35px'}}>배수</th>
-                    <th style={{...thStyle, width:'120px', color:'red'}}>마진 (이전→변경)</th>
+                    <th style={{...thStyle, width:'120px', color:'red'}} onClick={() => handleSort('margin')}>마진 (이전→변경)</th>
                   </tr>
                 </thead>
                 <tbody>
                   {getProcessedData().map((item, idx) => {
+                    // 2번 메뉴에서는 여전히 Ghost 수정 불가 로직 유지
                     const isGhost = item.isGhost;
                     const isE = editingCode === item.code && !isGhost;
                     const isChild = item.isMappedChild;
@@ -791,6 +805,7 @@ function App() {
                   <tr style={{ background: '#f8f9fa' }}>
                     <th style={{ ...thStyle, ...fX(cols.chk.l, true), ...cellS(cols.chk) }}><input type="checkbox" onChange={handleSelectAll} checked={selectedCodes.length > 0 && selectedCodes.length === getProcessedData().filter(i=>!i.isGhost).length} /></th>
                     <th style={{ ...thStyle, ...fX(cols.mng.l, true), ...cellS(cols.mng) }}>관리</th>
+                    {/* ✅ 모든 헤더에 onClick 정렬 이벤트를 연결했습니다! */}
                     <th style={{ ...thStyle, ...fX(cols.brd.l, true), ...cellS(cols.brd) }} onClick={() => handleSort('brand')}>브랜드</th>
                     <th style={{ ...thStyle, ...fX(cols.sea.l, true), ...cellS(cols.sea) }} onClick={() => handleSort('season')}>시즌</th>
                     <th style={{ ...thStyle, ...fX(cols.typ.l, true), ...cellS(cols.typ) }} onClick={() => handleSort('type')}>구분</th>
@@ -798,39 +813,50 @@ function App() {
                     <th style={{ ...thStyle, ...fX(cols.cat.l, true), ...cellS(cols.cat) }} onClick={() => handleSort('category')}>복종</th>
                     <th style={{ ...thStyle, ...fX(cols.sty.l, true), ...cellS(cols.sty) }} onClick={() => handleSort('style_no')}>스타일</th>
                     <th style={{ ...thStyle, ...fX(cols.nam.l, true), ...cellS(cols.nam), textAlign:'left', borderRight: '2px solid #aaa' }} onClick={() => handleSort('name')}>상품명</th>
-                    <th style={{...thStyle, width:'70px'}}>1주발주</th>
-                    <th style={{...thStyle, width:'70px'}}>2주발주</th>
-                    <th style={{...thStyle, width:'70px'}}>3주발주</th>
+                    <th style={{...thStyle, width:'70px'}} onClick={() => handleSort('order_w1')}>1주발주</th>
+                    <th style={{...thStyle, width:'70px'}} onClick={() => handleSort('order_w2')}>2주발주</th>
+                    <th style={{...thStyle, width:'70px'}} onClick={() => handleSort('order_w3')}>3주발주</th>
                     <th style={{...thStyle, width:'80px', color:'#2980b9'}} onClick={() => handleSort('totalOrder')}>총 발주합계</th>
                     <th style={{...thStyle, width:'80px', color:'#27ae60'}} onClick={() => handleSort('stock')}>온라인재고</th>
-                    <th style={{...thStyle, width:'80px'}}>본사재고</th>
+                    <th style={{...thStyle, width:'80px'}} onClick={() => handleSort('hq_stock')}>본사재고</th>
                   </tr>
                 </thead>
                 <tbody>
                   {getProcessedData().map((item, idx) => {
                     const isGhost = item.isGhost;
-                    const isE = editingCode === item.code && !isGhost;
+                    // 💡 [핵심] 3번 메뉴는 Ghost(중복) 여부 상관없이 무조건 수정 가능하게 활성화!
+                    const isE = editingCode === item.code; 
                     const isChild = item.isMappedChild;
                     const trBg = selectedCodes.includes(item.code) ? '#fff9db' : (isE ? '#e3f2fd' : (isChild ? '#f8fbfc' : '#fff'));
+                    // 중복 아이템 글씨색만 살짝 옅게 표시 (값은 보임)
+                    const txtColor = isGhost ? '#95a5a6' : 'inherit'; 
                     
                     return (
-                      <tr key={`inv-${item.code}-${idx}`} style={{ background: trBg }}>
-                        <td style={{ ...tdStyle, ...fX(cols.chk.l), ...cellS(cols.chk), background: trBg }}>{!isGhost && <input type="checkbox" checked={selectedCodes.includes(item.code)} onChange={() => setSelectedCodes(prev => prev.includes(item.code) ? prev.filter(c => c !== item.code) : [...prev, item.code])} />}</td>
-                        <td style={{ ...tdStyle, ...fX(cols.mng.l), ...cellS(cols.mng), background: trBg }}>{!isGhost ? (isE ? <button onClick={()=>saveEdit(item)} style={btnStyle}>완료</button> : <button onClick={()=>{setEditingCode(item.code); setEditRow({...item});}} style={btnStyle}>수정</button>) : <span style={{color:GHOST_COLOR}}>-</span>}</td>
+                      <tr key={`inv-${item.code}-${idx}`} style={{ background: trBg, color: txtColor }}>
+                        <td style={{ ...tdStyle, ...fX(cols.chk.l), ...cellS(cols.chk), background: trBg }}>
+                           <input type="checkbox" checked={selectedCodes.includes(item.code)} onChange={() => setSelectedCodes(prev => prev.includes(item.code) ? prev.filter(c => c !== item.code) : [...prev, item.code])} />
+                        </td>
+                        <td style={{ ...tdStyle, ...fX(cols.mng.l), ...cellS(cols.mng), background: trBg }}>
+                           {isE ? <button onClick={()=>saveEdit(item)} style={btnStyle}>완료</button> : <button onClick={()=>{setEditingCode(item.code); setEditRow({...item});}} style={btnStyle}>수정</button>}
+                        </td>
+                        
+                        {/* 💡 3번 메뉴는 '-' 가림막 없이 원래 데이터를 다 보여줍니다. */}
                         <td style={{ ...tdStyle, ...fX(cols.brd.l), ...cellS(cols.brd), background: trBg }}>{item.brand}</td>
                         <td style={{ ...tdStyle, ...fX(cols.sea.l), ...cellS(cols.sea), background: trBg }}>{item.season}</td>
-                        <td style={{ ...tdStyle, ...fX(cols.typ.l), ...cellS(cols.typ), background: trBg, color: isGhost ? GHOST_COLOR : (item.type.includes('묶음')?'#6c5ce7':(isChild?'#b2bec3':'#999')), fontWeight: item.type.includes('묶음')?'bold':'normal' }}>{item.type}</td>
-                        <td style={{ ...tdStyle, ...fX(cols.cod.l), ...cellS(cols.cod), background: trBg, paddingLeft: isChild?'10px':'2px' }}>{isChild && <span style={{color:'#bdc3c7', marginRight:'3px'}}>└</span>}<span style={{color: isGhost ? GHOST_COLOR : 'inherit'}}>{item.code}</span></td>
+                        <td style={{ ...tdStyle, ...fX(cols.typ.l), ...cellS(cols.typ), background: trBg, fontWeight: item.type.includes('묶음')?'bold':'normal' }}>{item.type}</td>
+                        <td style={{ ...tdStyle, ...fX(cols.cod.l), ...cellS(cols.cod), background: trBg, paddingLeft: isChild?'10px':'2px' }}>{isChild && <span style={{color:'#bdc3c7', marginRight:'3px'}}>└</span>}{item.code}</td>
                         <td style={{ ...tdStyle, ...fX(cols.cat.l), ...cellS(cols.cat), background: trBg }}>{item.category}</td>
                         <td style={{ ...tdStyle, ...fX(cols.sty.l), ...cellS(cols.sty), background: trBg }}>{item.style_no}</td>
-                        <td style={{ ...tdStyle, ...fX(cols.nam.l), ...cellS(cols.nam), background: trBg, textAlign:'left', paddingLeft: isChild?'10px':'2px', borderRight: '2px solid #aaa' }}>{isGhost ? <span style={{color:GHOST_COLOR}}>{item.name} (중복)</span> : item.name}</td>
+                        <td style={{ ...tdStyle, ...fX(cols.nam.l), ...cellS(cols.nam), background: trBg, textAlign:'left', paddingLeft: isChild?'10px':'2px', borderRight: '2px solid #aaa' }}>
+                          {item.name} {isGhost && <span style={{fontSize:'10px', color:'#e74c3c'}}>(중복)</span>}
+                        </td>
                         
-                        <td style={{...tdStyle, background: isE ? '#fff' : 'inherit'}}>{isGhost ? <span style={{color:GHOST_COLOR}}>-</span> : (isE ? <input type="number" value={editRow.order_w1||0} onChange={e=>setEditRow({...editRow, order_w1:e.target.value})} style={{width:'50px', fontSize:'10px', textAlign:'center'}}/> : (item.orderW1 || 0).toLocaleString())}</td>
-                        <td style={{...tdStyle, background: isE ? '#fff' : 'inherit'}}>{isGhost ? <span style={{color:GHOST_COLOR}}>-</span> : (isE ? <input type="number" value={editRow.order_w2||0} onChange={e=>setEditRow({...editRow, order_w2:e.target.value})} style={{width:'50px', fontSize:'10px', textAlign:'center'}}/> : (item.orderW2 || 0).toLocaleString())}</td>
-                        <td style={{...tdStyle, background: isE ? '#fff' : 'inherit'}}>{isGhost ? <span style={{color:GHOST_COLOR}}>-</span> : (isE ? <input type="number" value={editRow.order_w3||0} onChange={e=>setEditRow({...editRow, order_w3:e.target.value})} style={{width:'50px', fontSize:'10px', textAlign:'center'}}/> : (item.orderW3 || 0).toLocaleString())}</td>
-                        <td style={{...tdStyle, color:'#2980b9', fontWeight:'bold'}}>{isGhost ? <span style={{color:GHOST_COLOR}}>-</span> : item.totalOrder?.toLocaleString()}</td>
-                        <td style={{...tdStyle, color:'#27ae60', fontWeight:'bold', background: isE ? '#fff' : 'inherit'}}>{isGhost ? <span style={{color:GHOST_COLOR}}>-</span> : (isE ? <input type="number" value={editRow.stock||0} onChange={e=>setEditRow({...editRow, stock:e.target.value})} style={{width:'50px', fontSize:'10px', textAlign:'center'}}/> : (item.stock || 0).toLocaleString())}</td>
-                        <td style={{...tdStyle, background: isE ? '#fff' : 'inherit'}}>{isGhost ? <span style={{color:GHOST_COLOR}}>-</span> : (isE ? <input type="number" value={editRow.hqStock||0} onChange={e=>setEditRow({...editRow, hqStock:e.target.value})} style={{width:'50px', fontSize:'10px', textAlign:'center'}}/> : (item.hqStock || 0).toLocaleString())}</td>
+                        <td style={{...tdStyle, background: isE ? '#fff' : 'inherit'}}>{isE ? <input type="number" value={editRow.order_w1||0} onChange={e=>setEditRow({...editRow, order_w1:e.target.value})} style={{width:'50px', fontSize:'10px', textAlign:'center'}}/> : (item.orderW1 || 0).toLocaleString()}</td>
+                        <td style={{...tdStyle, background: isE ? '#fff' : 'inherit'}}>{isE ? <input type="number" value={editRow.order_w2||0} onChange={e=>setEditRow({...editRow, order_w2:e.target.value})} style={{width:'50px', fontSize:'10px', textAlign:'center'}}/> : (item.orderW2 || 0).toLocaleString()}</td>
+                        <td style={{...tdStyle, background: isE ? '#fff' : 'inherit'}}>{isE ? <input type="number" value={editRow.order_w3||0} onChange={e=>setEditRow({...editRow, order_w3:e.target.value})} style={{width:'50px', fontSize:'10px', textAlign:'center'}}/> : (item.orderW3 || 0).toLocaleString()}</td>
+                        <td style={{...tdStyle, color:'#2980b9', fontWeight:'bold'}}>{item.totalOrder?.toLocaleString()}</td>
+                        <td style={{...tdStyle, color:'#27ae60', fontWeight:'bold', background: isE ? '#fff' : 'inherit'}}>{isE ? <input type="number" value={editRow.stock||0} onChange={e=>setEditRow({...editRow, stock:e.target.value})} style={{width:'50px', fontSize:'10px', textAlign:'center'}}/> : (item.stock || 0).toLocaleString()}</td>
+                        <td style={{...tdStyle, background: isE ? '#fff' : 'inherit'}}>{isE ? <input type="number" value={editRow.hqStock||0} onChange={e=>setEditRow({...editRow, hqStock:e.target.value})} style={{width:'50px', fontSize:'10px', textAlign:'center'}}/> : (item.hqStock || 0).toLocaleString()}</td>
                       </tr>
                     );
                   })}
