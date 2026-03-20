@@ -323,7 +323,7 @@ function App() {
   };
 
   // ==========================================
-  // 📊 엑셀 처리 함수들 (★ 스마트 동적 스캔)
+  // 📊 엑셀 처리 함수들 (★스마트 동적 스캔)
   // ==========================================
   const handleExcelUpload = async () => {
     if (!selectedFile) return alert("파일을 선택해주세요.");
@@ -382,7 +382,7 @@ function App() {
     reader.readAsBinaryString(file); e.target.value = null;
   };
 
-  // 📦 [Step 1] 온라인재고: 단품코드(자르지않음)에 재고와 바코드 사전 완벽 저장
+  // 📦 [Step 1] 사용자님 기획 100% 적용: P, Q, R, S, T, U, V, W 열 각각 단품에 매핑!
   const handleInventoryExcelUpload = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
@@ -395,17 +395,13 @@ function App() {
         const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
         
         let headerRowIndex = -1;
-        let cIdx=-1, xIdx=-1, lIdx=-1, pIdx=-1, rIdx=-1, tIdx=-1, vIdx=-1;
+        let pIdx=-1, rIdx=-1, tIdx=-1, vIdx=-1;
         
         for (let i = 0; i < Math.min(15, rows.length); i++) {
           const row = rows[i];
-          const foundC = row.findIndex(cell => String(cell).replace(/\s/g, '') === "상품코드");
           const foundX = row.findIndex(cell => String(cell).replace(/\s/g, '') === "합재고");
-          if (foundC !== -1 && foundX !== -1) {
+          if (foundX !== -1) {
              headerRowIndex = i;
-             cIdx = foundC; xIdx = foundX;
-             lIdx = row.findIndex(cell => String(cell).replace(/\s/g, '') === "바코드");
-             // 💡 동적으로 옵션별칭 열 찾기 (P, R, T, V 등에 매핑됨)
              pIdx = row.findIndex(cell => String(cell).replace(/\s/g, '').includes("옵션별칭1"));
              rIdx = row.findIndex(cell => String(cell).replace(/\s/g, '').includes("옵션별칭2"));
              tIdx = row.findIndex(cell => String(cell).replace(/\s/g, '').includes("옵션별칭3"));
@@ -414,63 +410,72 @@ function App() {
           }
         }
 
-        if (headerRowIndex === -1) return alert("❌ '상품코드' 또는 '합재고' 항목을 찾지 못했습니다.");
+        if (headerRowIndex === -1) return alert("❌ '합재고' 항목을 찾지 못했습니다.");
 
-        const stockMap = {};
-        const barcodeMap = {}; 
-
+        const stockMap = {}; 
         const allProducts = [...masterProducts, ...groups];
 
         for (let i = headerRowIndex + 1; i < rows.length; i++) {
           const row = rows[i];
-          // 💡 [핵심] 단품코드 자르지 않고 그대로 유지! (예: 100353-0017)
-          const cValue = String(row[cIdx] || "").trim();
-          const xValue = Number(String(row[xIdx] || "0").replace(/,/g, '')) || 0; 
           
-          const lValue = lIdx !== -1 ? String(row[lIdx] || "").trim() : "";
-          const pValue = pIdx !== -1 ? String(row[pIdx] || "").trim() : "";
-          const rValue = rIdx !== -1 ? String(row[rIdx] || "").trim() : "";
-          const tValue = tIdx !== -1 ? String(row[tIdx] || "").trim() : "";
-          const vValue = vIdx !== -1 ? String(row[vIdx] || "").trim() : "";
-
-          if (cValue) {
-            // DB에 등록된 정확한 단품 코드와 매칭
-            let targetProduct = allProducts.find(p => p.code === cValue);
-
-            if (targetProduct) {
-              const mainCode = targetProduct.code;
-              stockMap[mainCode] = (stockMap[mainCode] || 0) + xValue;
-              if (!barcodeMap[mainCode]) barcodeMap[mainCode] = new Set();
-              if (lValue) barcodeMap[mainCode].add(lValue);
-              if (pValue) barcodeMap[mainCode].add(pValue);
-              if (rValue) barcodeMap[mainCode].add(rValue);
-              if (tValue) barcodeMap[mainCode].add(tValue);
-              if (vValue) barcodeMap[mainCode].add(vValue);
-            }
+          // 💡 P열(바코드) -> Q열(pIdx+1, 수량) 매핑
+          if (pIdx !== -1) {
+              const pCode = String(row[pIdx] || "").trim();
+              const pStock = Number(String(row[pIdx + 1] || "0").replace(/,/g, '')) || 0;
+              if (pCode && pCode !== "0") stockMap[pCode] = pStock;
+          }
+          // 💡 R열(바코드) -> S열(rIdx+1, 수량) 매핑
+          if (rIdx !== -1) {
+              const rCode = String(row[rIdx] || "").trim();
+              const rStock = Number(String(row[rIdx + 1] || "0").replace(/,/g, '')) || 0;
+              if (rCode && rCode !== "0") stockMap[rCode] = rStock;
+          }
+          // 💡 T열(바코드) -> U열(tIdx+1, 수량) 매핑
+          if (tIdx !== -1) {
+              const tCode = String(row[tIdx] || "").trim();
+              const tStock = Number(String(row[tIdx + 1] || "0").replace(/,/g, '')) || 0;
+              if (tCode && tCode !== "0") stockMap[tCode] = tStock;
+          }
+          // 💡 V열(바코드) -> W열(vIdx+1, 수량) 매핑
+          if (vIdx !== -1) {
+              const vCode = String(row[vIdx] || "").trim();
+              const vStock = Number(String(row[vIdx + 1] || "0").replace(/,/g, '')) || 0;
+              if (vCode && vCode !== "0") stockMap[vCode] = vStock;
           }
         }
 
         const updatePromises = [];
-        let updatedCount = 0;
+        let updatedDbCount = 0;
 
-        for (const [code, stockVal] of Object.entries(stockMap)) {
-          const isGroup = groups.some(g => g.code === code);
-          const targetTable = isGroup ? 'groups' : 'master_products';
-          const existingProduct = allProducts.find(p => p.code === code);
+        for (const [barcode, stockVal] of Object.entries(stockMap)) {
+            // DB에서 단품을 찾습니다.
+            let targetProduct = allProducts.find(p => p.code === barcode);
+            if (!targetProduct) {
+                targetProduct = allProducts.find(p => p.barcode && p.barcode.split(',').includes(barcode));
+            }
+            if (!targetProduct) {
+                targetProduct = allProducts.find(p => p.style_no && p.style_no.length > 2 && barcode.includes(p.style_no));
+            }
 
-          if (existingProduct) {
-            const existingBarcodes = existingProduct.barcode ? existingProduct.barcode.split(',').map(s=>s.trim()) : [];
-            existingBarcodes.forEach(b => { if(b) barcodeMap[code].add(b); });
-            const newBarcodeStr = Array.from(barcodeMap[code]).join(',');
-            
-            updatePromises.push(
-              supabase.from(targetTable).update({ stock: stockVal, barcode: newBarcodeStr }).eq('code', code)
-            );
-            updatedCount++;
-          }
+            if (targetProduct) {
+                const mainCode = targetProduct.code;
+                const isGroup = groups.some(g => g.code === mainCode);
+                const targetTable = isGroup ? 'groups' : 'master_products';
+                
+                // 바코드 사전에 영구 기록
+                const existingBarcodes = targetProduct.barcode ? targetProduct.barcode.split(',').map(s=>s.trim()) : [];
+                if (!existingBarcodes.includes(barcode)) existingBarcodes.push(barcode);
+                const newBarcodeStr = existingBarcodes.filter(Boolean).join(',');
+
+                // 자식 단품에게 직접 온라인 재고를 꽂아 넣습니다!
+                updatePromises.push(
+                    supabase.from(targetTable).update({ stock: stockVal, barcode: newBarcodeStr }).eq('code', mainCode)
+                );
+                updatedDbCount++;
+            }
         }
         await Promise.all(updatePromises);
-        alert(`📦 온라인재고 피벗 매핑 1단계 완료!\n\n✅ 단품 재고 업데이트 및 정답지(사전) 등록: ${updatedCount}품번`);
+        alert(`📦 온라인재고 피벗 매핑 완료!\n\n✅ 엑셀에서 찾은 단품 바코드: ${Object.keys(stockMap).length}건\n✅ 단품 재고 꽂기 성공: ${updatedDbCount}품번`);
         fetchData();
       } catch (err) { 
         console.error(err);
@@ -481,7 +486,7 @@ function App() {
     e.target.value = null; 
   };
 
-  // 🏢 [Step 2] 본사재고: 정답지를 보고 단품에 수량 꽂기!
+  // 🏢 [Step 2] 본사재고 (단품에 직접 꽂기)
   const handleHqStockExcelUpload = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
@@ -513,6 +518,7 @@ function App() {
 
         const hqMap = {}; 
         let matchedCount = 0;
+        let unmatchedCount = 0;
 
         const allProducts = [...masterProducts, ...groups];
 
@@ -522,23 +528,23 @@ function App() {
           const nValue = Number(String(row[stockColIdx] || "0").replace(/,/g, '')) || 0;
 
           if (cValue && cValue !== "상품바코드" && cValue !== "기본항목") {
-            // 💡 [핵심] 바코드 사전을 보고 정확한 단품(자식)을 찾아냅니다.
             let targetProduct = allProducts.find(p => {
               const barcodeArray = p.barcode ? p.barcode.split(',').map(s=>s.trim()) : [];
-              return barcodeArray.includes(cValue);
+              return barcodeArray.includes(cValue) || p.code === cValue;
             });
 
             if (!targetProduct) {
                targetProduct = allProducts.find(p => 
-                  (p.style_no && p.style_no.length > 2 && cValue.includes(p.style_no)) || 
-                  (p.code && p.code.length > 2 && cValue.includes(p.code))
+                  (p.style_no && p.style_no.length > 2 && cValue.includes(p.style_no))
                );
             }
 
             if (targetProduct) {
-              const mainCode = targetProduct.code; // 단품 코드
+              const mainCode = targetProduct.code; 
               hqMap[mainCode] = (hqMap[mainCode] || 0) + nValue;
               matchedCount++;
+            } else {
+              unmatchedCount++;
             }
           }
         }
@@ -556,7 +562,7 @@ function App() {
         }
 
         await Promise.all(updatePromises);
-        alert(`🏢 본사재고 피벗 매핑 2단계 완료!\n\n✅ 바코드 찾음: ${matchedCount}건\n✅ 단품 수량 꽂기 성공: ${updatedDbCount}품번\n\n(하위 단품에 꽂힌 수량이 묶음으로 피벗 합산됩니다!)`);
+        alert(`🏢 본사재고 단품 매핑 완료!\n\n✅ 찾은 바코드: ${matchedCount}건\n✅ 단품 수량 꽂기 성공: ${updatedDbCount}품번\n❌ 실패: ${unmatchedCount}건`);
         fetchData();
       } catch (err) {
         console.error(err);
@@ -580,6 +586,7 @@ function App() {
 
         const orderMap = {}; 
         let matchedCount = 0;
+        let unmatchedCount = 0;
 
         const allProducts = [...masterProducts, ...groups];
 
@@ -595,13 +602,12 @@ function App() {
 
             let targetProduct = allProducts.find(p => {
               const barcodeArray = p.barcode ? p.barcode.split(',').map(s=>s.trim()) : [];
-              return barcodeArray.includes(styleCode);
+              return barcodeArray.includes(styleCode) || p.code === styleCode;
             });
 
             if (!targetProduct) {
                 targetProduct = allProducts.find(p => 
-                    (p.style_no && p.style_no.length > 2 && styleCode.includes(p.style_no)) || 
-                    (p.code && p.code.length > 2 && styleCode.includes(p.code))
+                    (p.style_no && p.style_no.length > 2 && styleCode.includes(p.style_no))
                 );
             }
 
@@ -613,6 +619,8 @@ function App() {
               orderMap[mainCode].w2 += lValue;
               orderMap[mainCode].w3 += mValue;
               matchedCount++;
+            } else {
+              unmatchedCount++;
             }
           }
         });
@@ -635,7 +643,7 @@ function App() {
         }
 
         await Promise.all(updatePromises);
-        alert(`🛒 발주 데이터 피벗 매핑 완료!\n\n✅ 엑셀에서 찾은 품번: ${matchedCount}건\n✅ 단품 수량 꽂기 성공: ${updatedDbCount}품번`);
+        alert(`🛒 발주 데이터 단품 매핑 완료!\n\n✅ 찾은 품번: ${matchedCount}건\n✅ 단품 수량 꽂기 성공: ${updatedDbCount}품번\n❌ 실패: ${unmatchedCount}건`);
         fetchData();
       } catch (err) {
         console.error(err);
@@ -992,15 +1000,15 @@ function App() {
                 <button onClick={handleCollapseAll} style={{padding:'6px 10px', background:'#7f8c8d', color:'#fff', border:'none', borderRadius:'4px', fontSize:'11px', cursor:'pointer', fontWeight:'bold'}}>▶ 전체닫기</button>
                 <div style={{width:'1px', background:'#ddd', margin:'0 2px'}}></div>
                 <label style={{fontSize:'11px', display:'flex', alignItems:'center', gap:'5px', cursor:'pointer', background:'#e8f8f5', padding:'6px 12px', borderRadius:'6px', border:'1px solid #1abc9c', color:'#16a085', fontWeight:'bold'}}>
-                  📦 온라인재고 (1.사방넷업뎃)
+                  📦 온라인재고 (1.사방넷재고)
                   <input type="file" onChange={handleInventoryExcelUpload} style={{display:'none'}} />
                 </label>
                 <label style={{fontSize:'11px', display:'flex', alignItems:'center', gap:'5px', cursor:'pointer', background:'#f4ecf7', padding:'6px 12px', borderRadius:'6px', border:'1px solid #8e44ad', color:'#8e44ad', fontWeight:'bold'}}>
-                  🏢 본사재고 (2.erp업뎃)
+                  🏢 본사재고 (2.erp재고)
                   <input type="file" onChange={handleHqStockExcelUpload} style={{display:'none'}} />
                 </label>
                 <label style={{fontSize:'11px', display:'flex', alignItems:'center', gap:'5px', cursor:'pointer', background:'#fef5e7', padding:'6px 12px', borderRadius:'6px', border:'1px solid #e67e22', color:'#d35400', fontWeight:'bold'}}>
-                  🛒 발주수량 (3.ep업뎃)
+                  🛒 발주수량 (3.이지어드민재고)
                   <input type="file" onChange={handleOrderExcelUpload} style={{display:'none'}} />
                 </label>
               </div>
