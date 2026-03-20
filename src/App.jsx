@@ -7,7 +7,7 @@ function App() {
   // ==========================================
   // 1. 상태 관리
   // ==========================================
-  const [activeMenu, setActiveMenu] = useState('list');
+  const [activeMenu, setActiveMenu] = useState('list'); // 'register', 'list', 'inventory'
   const [masterProducts, setMasterProducts] = useState([]);
   const [groups, setGroups] = useState([]);
   const [categories, setCategories] = useState([]);
@@ -116,7 +116,7 @@ function App() {
     let topLevel = [...matchedGroups, ...standaloneSingles];
     topLevel.sort((a, b) => {
       let vA = a[sortConfig.key]; let vB = b[sortConfig.key];
-      if (['cost', 'tag_price', 'price_sale', 'margin'].includes(sortConfig.key)) { 
+      if (['cost', 'tag_price', 'price_sale', 'margin', 'stock'].includes(sortConfig.key)) { 
         vA = Number(vA || 0); vB = Number(vB || 0); 
       } else { 
         vA = String(vA || "").toLowerCase(); vB = String(vB || "").toLowerCase(); 
@@ -158,6 +158,15 @@ function App() {
       const cost = Number(item.cost || 0); 
       const tag = Number(item.tag_price || 0);
       const sale = Number(item.price_sale || 0); 
+      
+      // 온라인재고(stock), 본사재고(hq_stock), 발주수량(추후 확장을 위한 초기값 0)
+      const stock = Number(item.stock || 0);
+      const hqStock = Number(item.hq_stock || 0);
+      const orderW1 = Number(item.order_w1 || 0);
+      const orderW2 = Number(item.order_w2 || 0);
+      const orderW3 = Number(item.order_w3 || 0);
+      const totalOrder = orderW1 + orderW2 + orderW3;
+
       const fee = Math.floor(sale * 0.18); 
       const settle = sale - fee; 
       const margin = settle - cost - 5000;
@@ -166,14 +175,14 @@ function App() {
       const discSale = tag === 0 ? 0 : Math.round((1 - (sale / tag)) * 100);
       
       return { 
-        ...item, fee, settle, margin, prevMargin: pMargin, 
+        ...item, fee, settle, margin, prevMargin: pMargin, stock, hqStock, orderW1, orderW2, orderW3, totalOrder,
         ratio: cost > 0 ? (sale / cost).toFixed(1) : "0.0", discSale 
       };
     });
   };
 
   // ==========================================
-  // 4. 데이터 저장 및 수정 함수
+  // 4. 데이터 저장 및 삭제 함수
   // ==========================================
   const addCategory = async () => { if(!newCatInput.trim()) return; await supabase.from('categories').insert([{name: newCatInput}]); setNewCatInput(''); fetchData(); };
   const deleteCategory = async (n) => { if(window.confirm(`[${n}] 삭제하시겠습니까?`)) { await supabase.from('categories').delete().eq('name',n); fetchData(); } };
@@ -181,30 +190,6 @@ function App() {
   const deleteBrand = async (n) => { if(window.confirm(`[${n}] 삭제하시겠습니까?`)) { await supabase.from('brands').delete().eq('name',n); fetchData(); } };
   const addSeason = async () => { if(!newSeasonInput.trim()) return; await supabase.from('seasons').insert([{name: newSeasonInput}]); setNewSeasonInput(''); fetchData(); };
   const deleteSeason = async (n) => { if(window.confirm(`[${n}] 삭제하시겠습니까?`)) { await supabase.from('seasons').delete().eq('name',n); fetchData(); } };
-
-  // ✅ 누락되었던 핵심 엑셀 업로드 함수 복구!
-  const handleExcelUpload = async () => {
-    if (!selectedFile) return alert("파일을 선택해주세요.");
-    const reader = new FileReader();
-    reader.onload = async (e) => {
-      try {
-        const data = XLSX.read(e.target.result, { type: 'binary' });
-        const parsedRows = XLSX.utils.sheet_to_json(data.Sheets[data.SheetNames[0]]);
-        const parsed = parsedRows.map(i => ({ 
-          brand: i.브랜드 || '', season: i.시즌 || '', category: i.복종 || '미분류', 
-          code: String(i.품번 || ''), style_no: String(i.스타일 || ''), name: i.상품명 || '', 
-          cost: Number(i.원가 || 0), tag_price: Number(i.Tag가 || 0) 
-        }));
-        await supabase.from('master_products').upsert(parsed, { onConflict: 'code' });
-        alert("✅ 엑셀 업로드 성공!"); 
-        setSelectedFile(null);
-        fetchData();
-      } catch (err) { 
-        alert("엑셀 파싱 에러"); 
-      }
-    };
-    reader.readAsBinaryString(selectedFile);
-  };
 
   const handleRegisterMaster = async () => {
     await supabase.from('master_products').upsert([{ 
@@ -230,13 +215,18 @@ function App() {
 
   const saveEdit = async (item) => {
     const tbl = (item.type.includes('단품') || item.type.includes('구성')) ? 'master_products' : 'groups';
+    
+    // 재고 및 가격 모두 포함해서 업데이트
     await supabase.from(tbl).update({
       brand: editRow.brand, season: editRow.season, category: editRow.category, style_no: editRow.style_no, name: editRow.name, 
       cost: Number(editRow.cost), tag_price: Number(editRow.tag_price), price_naver: Number(editRow.price_naver || 0), 
       price_coupang: Number(editRow.price_coupang||0), price_rocket: Number(editRow.price_rocket||0), 
       price_gold: Number(editRow.price_gold||0), price_sale: Number(editRow.price_sale || 0),
+      stock: Number(editRow.stock || 0),
+      hq_stock: Number(editRow.hqStock || 0),
       prev_naver: Number(item.price_naver || 0), prev_sale: Number(item.price_sale || 0)
     }).eq('code', editingCode);
+    
     setEditingCode(null); 
     fetchData();
   };
@@ -274,6 +264,30 @@ function App() {
     fetchData();
   };
 
+  // ==========================================
+  // 📊 엑셀 처리 함수들 (업로드/다운로드)
+  // ==========================================
+  const handleExcelUpload = async () => {
+    if (!selectedFile) return alert("파일을 선택해주세요.");
+    const reader = new FileReader();
+    reader.onload = async (e) => {
+      try {
+        const data = XLSX.read(e.target.result, { type: 'binary' });
+        const parsedRows = XLSX.utils.sheet_to_json(data.Sheets[data.SheetNames[0]]);
+        const parsed = parsedRows.map(i => ({ 
+          brand: i.브랜드 || '', season: i.시즌 || '', category: i.복종 || '미분류', 
+          code: String(i.품번 || ''), style_no: String(i.스타일 || ''), name: i.상품명 || '', 
+          cost: Number(i.원가 || 0), tag_price: Number(i.Tag가 || 0) 
+        }));
+        await supabase.from('master_products').upsert(parsed, { onConflict: 'code' });
+        alert("✅ 마스터 엑셀 업로드 성공!"); 
+        setSelectedFile(null);
+        fetchData();
+      } catch (err) { alert("엑셀 파싱 에러"); }
+    };
+    reader.readAsBinaryString(selectedFile);
+  };
+
   const downloadListExcel = () => {
     let src = getProcessedData().filter(i => !i.isGhost);
     if (selectedCodes.length) src = src.filter(i => selectedCodes.includes(i.code));
@@ -281,9 +295,9 @@ function App() {
     const dataToExport = src.map(item => ({
       "구분": item.type, "품번": item.code, "브랜드": item.brand || '', "시즌": item.season || '',
       "복종": item.category || '', "스타일코드": item.style_no || '', "상품명": item.name || '',
-      "원가": item.cost || 0, "Tag가": item.tag_price || 0, "네이버(변경)": item.price_naver || 0,
-      "쿠팡(변경)": item.price_coupang || 0, "로켓(변경)": item.price_rocket || 0, "골드(변경)": item.price_gold || 0,
-      "행사가(변경)": item.price_sale || 0
+      "원가": item.cost || 0, "Tag가": item.tag_price || 0, "온라인재고": item.stock || 0,
+      "네이버(변경)": item.price_naver || 0, "쿠팡(변경)": item.price_coupang || 0, 
+      "로켓(변경)": item.price_rocket || 0, "골드(변경)": item.price_gold || 0, "행사가(변경)": item.price_sale || 0
     }));
 
     const ws = XLSX.utils.json_to_sheet(dataToExport);
@@ -303,10 +317,68 @@ function App() {
         const tbl = groups.some(g=>g.code===c) ? 'groups' : 'master_products';
         await supabase.from(tbl).update({ cost: Number(r["원가"]||0), price_sale: Number(r["행사가"]||0) }).eq('code', c);
       }
-      alert("✅ 업로드 완료"); 
+      alert("✅ 변경 업로드 완료"); 
       fetchData();
     };
+    reader.readAsBinaryString(file); e.target.value = null;
+  };
+
+  // 📦 온라인재고 C열(품번파싱), X열(합산) 자동 업데이트 함수
+  const handleInventoryExcelUpload = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    
+    const reader = new FileReader();
+    reader.onload = async (ev) => {
+      try {
+        const workbook = XLSX.read(ev.target.result, { type: 'binary' });
+        const sheet = workbook.Sheets[workbook.SheetNames[0]];
+
+        // A, B, C 열을 강제 매핑하여 데이터 추출 (엑셀 헤더 위치 상관없이)
+        const rows = XLSX.utils.sheet_to_json(sheet, { header: "A", defval: "" });
+        const stockMap = {};
+
+        rows.forEach(row => {
+          const cValue = String(row["C"] || "").trim(); // C열: 상품코드
+          const xValue = Number(row["X"]) || 0;         // X열: 합재고
+
+          if (cValue && cValue !== "상품코드") {
+            // '-' 기준으로 자르고 앞부분 품번만 추출 (예: 100032-0001 -> 100032)
+            const baseCode = cValue.split('-')[0];
+            if (baseCode) {
+              // 중복 품번의 경우 X열 수량을 피벗(누적 합산)
+              stockMap[baseCode] = (stockMap[baseCode] || 0) + xValue;
+            }
+          }
+        });
+
+        const updatePromises = [];
+        let updatedCount = 0;
+
+        for (const [code, stockVal] of Object.entries(stockMap)) {
+          const isGroup = groups.some(g => g.code === code);
+          const targetTable = isGroup ? 'groups' : 'master_products';
+          const exists = isGroup || masterProducts.some(p => p.code === code);
+
+          if (exists) {
+            // DB의 stock(온라인재고) 컬럼 업데이트
+            updatePromises.push(
+              supabase.from(targetTable).update({ stock: stockVal }).eq('code', code)
+            );
+            updatedCount++;
+          }
+        }
+
+        await Promise.all(updatePromises);
+        alert(`📦 온라인재고 업데이트 성공!\n(총 ${updatedCount}개 품번의 재고가 합산 반영되었습니다.)`);
+        fetchData();
+      } catch (err) {
+        console.error(err);
+        alert("❌ 재고 엑셀 처리 중 오류가 발생했습니다. C열과 X열 구조를 확인해주세요.");
+      }
+    };
     reader.readAsBinaryString(file);
+    e.target.value = null; // 인풋 초기화
   };
 
   const downloadExcelTemplate = () => {
@@ -326,6 +398,7 @@ function App() {
   const thStyle = { boxSizing: 'border-box', padding: '4px', background: '#f8f9fa', borderBottom: '2px solid #ddd', borderRight: '1px solid #eee', fontSize: '11px', fontWeight: 'bold', position: 'sticky', top: 0, zIndex: 10, whiteSpace: 'nowrap', textAlign: 'center' };
   const tdStyle = { boxSizing: 'border-box', padding: '3px 4px', borderBottom: '1px solid #eee', borderRight: '1px solid #f9f9f9', fontSize: '11px', whiteSpace: 'nowrap', textAlign: 'center', overflow: 'hidden', textOverflow: 'ellipsis' };
   
+  // 테이블 고정 틀 너비 세팅
   const cols = {
     chk: { w: 26,  l: 0 },
     mng: { w: 36,  l: 26 },
@@ -363,19 +436,33 @@ function App() {
     : { flex: 1, padding: '20px', boxSizing: 'border-box', marginLeft: '85px', width: 'calc(100% - 85px)', overflowY: 'auto' };
 
   const miniMenuStyle = (active) => ({ 
-    width: isMobile ? '80px' : '75px', height: isMobile ? '45px' : '65px', borderRadius: '10px', display: 'flex', 
+    width: isMobile ? '70px' : '75px', height: isMobile ? '45px' : '65px', borderRadius: '10px', display: 'flex', 
     flexDirection: isMobile ? 'row' : 'column', alignItems: 'center', justifyContent: 'center', marginBottom: isMobile ? '0' : '15px', 
     cursor: 'pointer', backgroundColor: active ? PRIMARY_COLOR : 'transparent', color: active ? '#fff' : '#b2bec3', border: active ? 'none' : '1px solid #455a64', gap: isMobile ? '5px' : '0'
   });
 
+  // 공통 상단 필터 컴포넌트 (2번, 3번 메뉴 공용)
+  const FilterBar = () => (
+    <div style={{ background:'#fff', padding:'12px', borderRadius:'12px', marginBottom:'10px', display:'flex', gap:'10px', alignItems:'center', flexWrap:'wrap', boxShadow:'0 2px 5px rgba(0,0,0,0.05)' }}>
+      <select value={filterCategory} onChange={e => setFilterCategory(e.target.value)} style={{padding:'6px', borderRadius:'6px', border:'1px solid #ddd', fontSize:'12px', flex: isMobile? '1 1 45%' : 'none'}}><option value="전체">복종 전체</option>{categories.map(c => <option key={c} value={c}>{c}</option>)}</select>
+      <select value={filterBrand} onChange={e => setFilterBrand(e.target.value)} style={{padding:'6px', borderRadius:'6px', border:'1px solid #ddd', fontSize:'12px', flex: isMobile? '1 1 45%' : 'none'}}><option value="전체">브랜드 전체</option>{brands.map(b => <option key={b} value={b}>{b}</option>)}</select>
+      <select value={filterSeason} onChange={e => setFilterSeason(e.target.value)} style={{padding:'6px', borderRadius:'6px', border:'1px solid #ddd', fontSize:'12px', flex: isMobile? '1 1 45%' : 'none'}}><option value="전체">시즌 전체</option>{seasons.map(s => <option key={s} value={s}>{s}</option>)}</select>
+      <div style={{ display:'flex', width: isMobile ? '100%' : 'auto', gap:'5px' }}>
+        <input placeholder="검색 (품번,상품명)" value={searchTerm} onChange={e => setSearchTerm(e.target.value)} style={{padding:'6px', flex:1, minWidth:'120px', border:'1px solid #ddd', borderRadius:'6px', fontSize:'12px'}} />
+        <button onClick={fetchData} style={{padding:'6px 15px', background:PRIMARY_COLOR, color:'#fff', border:'none', borderRadius:'6px', fontSize:'12px', cursor:'pointer', whiteSpace:'nowrap'}}>조회</button>
+      </div>
+    </div>
+  );
+
   return (
     <div style={{ display: 'flex', flexDirection: isMobile ? 'column' : 'row', minHeight: '100vh', width: '100vw', backgroundColor: '#f4f7f6', position: 'absolute', top: 0, left: 0, overflow: 'hidden' }}>
       
-      {/* ⬅️ 네비게이션 */}
+      {/* ⬅️ 네비게이션 (3번 메뉴 추가) */}
       <div style={sidebarStyle}>
         {!isMobile && <h2 style={{ color: PRIMARY_COLOR, fontSize: '0.7rem', marginBottom: '30px', textAlign: 'center' }}>LINE<br/>SHEET</h2>}
         <div onClick={() => setActiveMenu('register')} style={miniMenuStyle(activeMenu === 'register')}><span style={{fontWeight:'bold'}}>1</span><span style={{fontSize:'10px'}}>상품등록</span></div>
-        <div onClick={() => setActiveMenu('list')} style={miniMenuStyle(activeMenu === 'list')}><span style={{fontWeight:'bold'}}>2</span><span style={{fontSize:'10px'}}>조회/수정</span></div>
+        <div onClick={() => setActiveMenu('list')} style={miniMenuStyle(activeMenu === 'list')}><span style={{fontWeight:'bold'}}>2</span><span style={{fontSize:'10px'}}>가격마진</span></div>
+        <div onClick={() => setActiveMenu('inventory')} style={miniMenuStyle(activeMenu === 'inventory')}><span style={{fontWeight:'bold'}}>3</span><span style={{fontSize:'10px'}}>재고발주</span></div>
       </div>
 
       <div style={mainContentStyle}>
@@ -411,7 +498,7 @@ function App() {
 
             <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: '20px' }}>
               
-              {/* --- 단품 등록 영역 --- */}
+              {/* --- 단품 등록 --- */}
               <div style={{ background: '#fff', padding: '20px', borderRadius: '12px', borderLeft: `5px solid #00cec9`, boxShadow: '0 4px 10px rgba(0,0,0,0.05)' }}>
                 <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'15px' }}>
                   <h3 style={{color:'#00cec9', margin:0, fontSize: isMobile?'1rem':'1.17em'}}>📋 1. 단품 마스터 등록</h3>
@@ -457,7 +544,7 @@ function App() {
                 </div>
               </div>
 
-              {/* --- 그룹 등록 영역 --- */}
+              {/* --- 그룹 등록 --- */}
               <div style={{ background: '#fff', padding: '20px', borderRadius: '12px', borderLeft: `5px solid #6c5ce7`, boxShadow: '0 4px 10px rgba(0,0,0,0.05)' }}>
                 <h3 style={{ color: '#6c5ce7', marginBottom: '15px', fontSize: isMobile?'1rem':'1.17em' }}>📦 2. 그룹/세트 최종 구성</h3>
                 
@@ -508,29 +595,24 @@ function App() {
           </div>
         )}
 
-        {/* ======================= [ 메뉴 2: 리스트 & 일괄변경 ] ======================= */}
+        {/* ======================= [ 메뉴 2: 가격 & 마진 시뮬레이션 ] ======================= */}
         {activeMenu === 'list' && (
           <div style={{ width: '100%' }}>
             
             <div style={{ display: 'flex', flexDirection: isMobile ? 'column' : 'row', justifyContent: 'space-between', alignItems: isMobile ? 'flex-start' : 'flex-end', marginBottom: '15px', gap: '10px' }}>
-              <h2 style={{ margin: 0, fontSize: isMobile?'1.2rem':'1.5rem' }}>🔍 마진 시뮬레이션</h2>
-              <div style={{ display: 'flex', gap: '8px', background:'#fff', padding:'8px', borderRadius:'8px', boxShadow:'0 2px 5px rgba(0,0,0,0.05)', width: isMobile ? '100%' : 'auto', boxSizing:'border-box', overflowX:'auto' }}>
-                <button onClick={downloadListExcel} style={{padding:'6px 10px', background:'#27ae60', color:'#fff', border:'none', borderRadius:'4px', fontSize:'11px', cursor:'pointer', fontWeight:'bold', whiteSpace:'nowrap'}}>📄 {selectedCodes.length > 0 ? "선택 엑셀" : "전체 엑셀"}</button>
+              <h2 style={{ margin: 0, fontSize: isMobile?'1.2rem':'1.5rem' }}>💰 가격/마진 시뮬레이션</h2>
+              
+              <div style={{ display: 'flex', gap: '8px', background:'#fff', padding:'8px', borderRadius:'8px', boxShadow:'0 2px 5px rgba(0,0,0,0.05)', width: isMobile ? '100%' : 'auto', boxSizing:'border-box', overflowX:'auto', whiteSpace:'nowrap' }}>
+                <button onClick={downloadListExcel} style={{padding:'6px 10px', background:'#27ae60', color:'#fff', border:'none', borderRadius:'4px', fontSize:'11px', cursor:'pointer', fontWeight:'bold'}}>📄 {selectedCodes.length > 0 ? "선택 엑셀" : "전체 엑셀"}</button>
                 <div style={{width:'1px', background:'#ddd', margin:'0 2px'}}></div>
-                <input type="file" onChange={handleListExcelUpload} style={{fontSize:'11px', width:'150px'}} />
+                <label style={{fontSize:'11px', display:'flex', alignItems:'center', gap:'5px', cursor:'pointer', background:'#f8f9fa', padding:'4px 8px', borderRadius:'4px', border:'1px solid #ddd'}}>
+                  📁 가격/기본수정
+                  <input type="file" onChange={handleListExcelUpload} style={{display:'none'}} />
+                </label>
               </div>
             </div>
             
-            <div style={{ background:'#fff', padding:'12px', borderRadius:'12px', marginBottom:'10px', display:'flex', gap:'10px', alignItems:'center', flexWrap:'wrap', boxShadow:'0 2px 5px rgba(0,0,0,0.05)' }}>
-              <select value={filterCategory} onChange={e => setFilterCategory(e.target.value)} style={{padding:'6px', borderRadius:'6px', border:'1px solid #ddd', fontSize:'12px', flex: isMobile? '1 1 45%' : 'none'}}><option value="전체">복종 전체</option>{categories.map(c => <option key={c} value={c}>{c}</option>)}</select>
-              <select value={filterBrand} onChange={e => setFilterBrand(e.target.value)} style={{padding:'6px', borderRadius:'6px', border:'1px solid #ddd', fontSize:'12px', flex: isMobile? '1 1 45%' : 'none'}}><option value="전체">브랜드 전체</option>{brands.map(b => <option key={b} value={b}>{b}</option>)}</select>
-              <select value={filterSeason} onChange={e => setFilterSeason(e.target.value)} style={{padding:'6px', borderRadius:'6px', border:'1px solid #ddd', fontSize:'12px', flex: isMobile? '1 1 45%' : 'none'}}><option value="전체">시즌 전체</option>{seasons.map(s => <option key={s} value={s}>{s}</option>)}</select>
-              
-              <div style={{ display:'flex', width: isMobile ? '100%' : 'auto', gap:'5px' }}>
-                <input placeholder="검색 (품번,상품명)" value={searchTerm} onChange={e => setSearchTerm(e.target.value)} style={{padding:'6px', flex:1, minWidth:'120px', border:'1px solid #ddd', borderRadius:'6px', fontSize:'12px'}} />
-                <button onClick={fetchData} style={{padding:'6px 15px', background:PRIMARY_COLOR, color:'#fff', border:'none', borderRadius:'6px', fontSize:'12px', cursor:'pointer', whiteSpace:'nowrap'}}>조회</button>
-              </div>
-            </div>
+            <FilterBar />
 
             <div style={{ background:'#ebf3f9', padding:'8px', borderRadius:'8px', marginBottom:'15px', display:'flex', gap:'8px', alignItems:'center', border:'1px solid #3498db', overflowX:'auto', whiteSpace:'nowrap' }}>
               <strong style={{fontSize:'11px'}}>⚡ 일괄변경 ({selectedCodes.length}):</strong>
@@ -605,6 +687,81 @@ function App() {
                         <td style={{...tdStyle, fontWeight: isGhost ? 'normal' : 'bold'}}>{isGhost ? <span style={{color:GHOST_COLOR}}>-</span> : (curS - Math.floor(curS * 0.18)).toLocaleString()}</td>
                         <td style={tdStyle}>{isGhost ? <span style={{color:GHOST_COLOR}}>-</span> : item.ratio}</td>
                         <td style={{...tdStyle, color:'red', fontWeight: isGhost ? 'normal' : 'bold', background: isE ? '#fff5f5' : '#fff9f9'}}>{isGhost ? <span style={{color:GHOST_COLOR}}>-</span> : (<>{Number(item.prevMargin || 0).toLocaleString()} → {curMargin.toLocaleString()}</>)}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {/* ======================= [ 메뉴 3: 신규 재고 & 발주 관리 ] ======================= */}
+        {activeMenu === 'inventory' && (
+          <div style={{ width: '100%' }}>
+            
+            <div style={{ display: 'flex', flexDirection: isMobile ? 'column' : 'row', justifyContent: 'space-between', alignItems: isMobile ? 'flex-start' : 'flex-end', marginBottom: '15px', gap: '10px' }}>
+              <h2 style={{ margin: 0, fontSize: isMobile?'1.2rem':'1.5rem' }}>📦 재고 및 발주 관리</h2>
+              
+              <div style={{ display: 'flex', gap: '8px', background:'#fff', padding:'8px', borderRadius:'8px', boxShadow:'0 2px 5px rgba(0,0,0,0.05)', width: isMobile ? '100%' : 'auto', boxSizing:'border-box', overflowX:'auto', whiteSpace:'nowrap' }}>
+                <label style={{fontSize:'11px', display:'flex', alignItems:'center', gap:'5px', cursor:'pointer', background:'#e8f8f5', padding:'6px 12px', borderRadius:'6px', border:'1px solid #1abc9c', color:'#16a085', fontWeight:'bold'}}>
+                  ⚡ 온라인재고 업데이트 (C열-X열)
+                  <input type="file" onChange={handleInventoryExcelUpload} style={{display:'none'}} />
+                </label>
+              </div>
+            </div>
+            
+            {/* 공용 필터 재사용 */}
+            <FilterBar />
+
+            <div style={{ background:'#fff', borderRadius:'12px', overflowX:'auto', boxShadow:'0 4px 15px rgba(0,0,0,0.05)', maxHeight: isMobile ? '65vh' : '80vh' }}>
+              <table style={{ borderCollapse: 'separate', borderSpacing: 0, width: 'max-content' }}>
+                <thead>
+                  <tr style={{ background: '#f8f9fa' }}>
+                    <th style={{ ...thStyle, ...fX(cols.chk.l, true), ...cellS(cols.chk) }}><input type="checkbox" onChange={handleSelectAll} checked={selectedCodes.length > 0 && selectedCodes.length === getProcessedData().filter(i=>!i.isGhost).length} /></th>
+                    <th style={{ ...thStyle, ...fX(cols.mng.l, true), ...cellS(cols.mng) }}>관리</th>
+                    <th style={{ ...thStyle, ...fX(cols.brd.l, true), ...cellS(cols.brd) }} onClick={() => handleSort('brand')}>브랜드</th>
+                    <th style={{ ...thStyle, ...fX(cols.sea.l, true), ...cellS(cols.sea) }} onClick={() => handleSort('season')}>시즌</th>
+                    <th style={{ ...thStyle, ...fX(cols.typ.l, true), ...cellS(cols.typ) }} onClick={() => handleSort('type')}>구분</th>
+                    <th style={{ ...thStyle, ...fX(cols.cod.l, true), ...cellS(cols.cod) }} onClick={() => handleSort('code')}>품번</th>
+                    <th style={{ ...thStyle, ...fX(cols.cat.l, true), ...cellS(cols.cat) }} onClick={() => handleSort('category')}>복종</th>
+                    <th style={{ ...thStyle, ...fX(cols.sty.l, true), ...cellS(cols.sty) }} onClick={() => handleSort('style_no')}>스타일</th>
+                    <th style={{ ...thStyle, ...fX(cols.nam.l, true), ...cellS(cols.nam), textAlign:'left', borderRight: '2px solid #aaa' }} onClick={() => handleSort('name')}>상품명</th>
+                    <th style={{...thStyle, width:'70px'}}>1주발주합계</th>
+                    <th style={{...thStyle, width:'70px'}}>2주발주합계</th>
+                    <th style={{...thStyle, width:'70px'}}>3주발주합계</th>
+                    <th style={{...thStyle, width:'80px', color:'#2980b9'}}>총 발주합계</th>
+                    <th style={{...thStyle, width:'80px', color:'#27ae60'}} onClick={() => handleSort('stock')}>온라인재고</th>
+                    <th style={{...thStyle, width:'80px'}}>본사재고</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {getProcessedData().map((item, idx) => {
+                    const isGhost = item.isGhost;
+                    const isE = editingCode === item.code && !isGhost;
+                    const isChild = item.isMappedChild;
+                    const trBg = selectedCodes.includes(item.code) ? '#fff9db' : (isE ? '#e3f2fd' : (isChild ? '#f8fbfc' : '#fff'));
+                    
+                    return (
+                      <tr key={`inv-${item.code}-${idx}`} style={{ background: trBg }}>
+                        <td style={{ ...tdStyle, ...fX(cols.chk.l), ...cellS(cols.chk), background: trBg }}>{!isGhost && <input type="checkbox" checked={selectedCodes.includes(item.code)} onChange={() => setSelectedCodes(prev => prev.includes(item.code) ? prev.filter(c => c !== item.code) : [...prev, item.code])} />}</td>
+                        <td style={{ ...tdStyle, ...fX(cols.mng.l), ...cellS(cols.mng), background: trBg }}>{!isGhost ? (isE ? <button onClick={()=>saveEdit(item)} style={btnStyle}>완료</button> : <button onClick={()=>{setEditingCode(item.code); setEditRow({...item});}} style={btnStyle}>수정</button>) : <span style={{color:GHOST_COLOR}}>-</span>}</td>
+                        <td style={{ ...tdStyle, ...fX(cols.brd.l), ...cellS(cols.brd), background: trBg }}>{item.brand}</td>
+                        <td style={{ ...tdStyle, ...fX(cols.sea.l), ...cellS(cols.sea), background: trBg }}>{item.season}</td>
+                        <td style={{ ...tdStyle, ...fX(cols.typ.l), ...cellS(cols.typ), background: trBg, color: isGhost ? GHOST_COLOR : (item.type.includes('묶음')?'#6c5ce7':(isChild?'#b2bec3':'#999')), fontWeight: item.type.includes('묶음')?'bold':'normal' }}>{item.type}</td>
+                        <td style={{ ...tdStyle, ...fX(cols.cod.l), ...cellS(cols.cod), background: trBg, paddingLeft: isChild?'10px':'2px' }}>{isChild && <span style={{color:'#bdc3c7', marginRight:'3px'}}>└</span>}<span style={{color: isGhost ? GHOST_COLOR : 'inherit'}}>{item.code}</span></td>
+                        <td style={{ ...tdStyle, ...fX(cols.cat.l), ...cellS(cols.cat), background: trBg }}>{item.category}</td>
+                        <td style={{ ...tdStyle, ...fX(cols.sty.l), ...cellS(cols.sty), background: trBg }}>{item.style_no}</td>
+                        <td style={{ ...tdStyle, ...fX(cols.nam.l), ...cellS(cols.nam), background: trBg, textAlign:'left', paddingLeft: isChild?'10px':'2px', borderRight: '2px solid #aaa' }}>{isGhost ? <span style={{color:GHOST_COLOR}}>{item.name} (중복)</span> : item.name}</td>
+                        
+                        {/* 발주 및 재고 데이터 */}
+                        <td style={tdStyle}>{isGhost ? <span style={{color:GHOST_COLOR}}>-</span> : item.orderW1?.toLocaleString()}</td>
+                        <td style={tdStyle}>{isGhost ? <span style={{color:GHOST_COLOR}}>-</span> : item.orderW2?.toLocaleString()}</td>
+                        <td style={tdStyle}>{isGhost ? <span style={{color:GHOST_COLOR}}>-</span> : item.orderW3?.toLocaleString()}</td>
+                        <td style={{...tdStyle, color:'#2980b9', fontWeight:'bold'}}>{isGhost ? <span style={{color:GHOST_COLOR}}>-</span> : item.totalOrder?.toLocaleString()}</td>
+                        
+                        <td style={{...tdStyle, color:'#27ae60', fontWeight:'bold', background: isE ? '#fff' : 'inherit'}}>{isGhost ? <span style={{color:GHOST_COLOR}}>-</span> : (isE ? <input type="number" value={editRow.stock||0} onChange={e=>setEditRow({...editRow, stock:e.target.value})} style={{width:'50px', fontSize:'10px', textAlign:'center'}}/> : (item.stock || 0).toLocaleString())}</td>
+                        <td style={{...tdStyle, background: isE ? '#fff' : 'inherit'}}>{isGhost ? <span style={{color:GHOST_COLOR}}>-</span> : (isE ? <input type="number" value={editRow.hqStock||0} onChange={e=>setEditRow({...editRow, hqStock:e.target.value})} style={{width:'50px', fontSize:'10px', textAlign:'center'}}/> : (item.hqStock || 0).toLocaleString())}</td>
                       </tr>
                     );
                   })}
