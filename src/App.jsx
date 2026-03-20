@@ -122,7 +122,7 @@ function App() {
     const standaloneSingles = matchedSingles.filter(s => !matchedMappedCodes.has(s.code));
     let topLevel = [...matchedGroups, ...standaloneSingles];
 
-    // 💡 [피벗 롤업 로직] 부모(그룹)는 과거 찌꺼기를 무시하고 오직 자식들의 합계로만 덮어씌웁니다.
+    // 💡 [피벗 롤업 로직]
     topLevel = topLevel.map(item => {
        let calcItem = { ...item };
        
@@ -145,7 +145,6 @@ function App() {
                sumHqStock += Number(liveChild.hq_stock || 0);
            });
            
-           // DB의 쓰레기 값을 무시하고, 오직 하위 단품의 총합으로 100% 덮어쓰기(=)
            calcItem.order_w1 = sumW1;
            calcItem.order_w2 = sumW2;
            calcItem.order_w3 = sumW3;
@@ -323,10 +322,66 @@ function App() {
   };
 
   // ==========================================
-  // 📊 엑셀 처리 함수들 (★ 1:1 완벽 매칭 로직)
+  // 📊 엑셀 처리 (★ 흰색창(Crash) 방지 완벽 조치)
   // ==========================================
-  
-  // 📦 [Step 1] 온라인재고: 어설픈 찍기(추측) 삭제! 오직 단품에만 저장!
+  const handleExcelUpload = async () => {
+    if (!selectedFile) return alert("파일을 선택해주세요.");
+    const reader = new FileReader();
+    reader.onload = async (e) => {
+      try {
+        const data = XLSX.read(e.target.result, { type: 'binary' });
+        const parsedRows = XLSX.utils.sheet_to_json(data.Sheets[data.SheetNames[0]]);
+        const parsed = parsedRows.map(i => ({ 
+          brand: String(i.브랜드 || ''), season: String(i.시즌 || ''), category: String(i.복종 || '미분류'), 
+          code: String(i.품번 || ''), style_no: String(i.스타일 || ''), name: String(i.상품명 || ''), 
+          cost: Number(i.원가 || 0), tag_price: Number(i.Tag가 || 0) 
+        }));
+        await supabase.from('master_products').upsert(parsed, { onConflict: 'code' });
+        alert("✅ 마스터 엑셀 업로드 성공!"); 
+        setSelectedFile(null);
+        fetchData();
+      } catch (err) { alert("엑셀 파싱 에러"); }
+    };
+    reader.readAsBinaryString(selectedFile);
+  };
+
+  const downloadListExcel = () => {
+    let src = activeMenu === 'inventory' ? processedData : processedData.filter(i => !i.isGhost);
+    if (selectedCodes.length) src = src.filter(i => selectedCodes.includes(i.code));
+    
+    const dataToExport = src.map(item => ({
+      "구분": item.type, "품번": item.code, "브랜드": item.brand || '', "시즌": item.season || '',
+      "복종": item.category || '', "스타일코드": item.style_no || '', "상품명": item.name || '',
+      "원가": item.cost || 0, "Tag가": item.tag_price || 0, "온라인재고": item.stock || 0, "본사재고": item.hq_stock || 0,
+      "1주발주": item.order_w1 || 0, "2주발주": item.order_w2 || 0, "3주발주": item.order_w3 || 0, "총 발주합계": item.totalOrder || 0,
+      "네이버(변경)": item.price_naver || 0, "쿠팡(변경)": item.price_coupang || 0, 
+      "로켓(변경)": item.price_rocket || 0, "골드(변경)": item.price_gold || 0, "행사가(변경)": item.price_sale || 0
+    }));
+
+    const ws = XLSX.utils.json_to_sheet(dataToExport);
+    const wb = XLSX.utils.book_new(); 
+    XLSX.utils.book_append_sheet(wb, ws, "조회데이터");
+    XLSX.writeFile(wb, "MD_라인시트_데이터.xlsx");
+  };
+
+  const handleListExcelUpload = async (e) => {
+    const file = e.target.files[0]; 
+    if(!file) return;
+    const reader = new FileReader();
+    reader.onload = async (ev) => {
+      const rows = XLSX.utils.sheet_to_json(XLSX.read(ev.target.result, {type:'binary'}).Sheets[XLSX.read(ev.target.result, {type:'binary'}).SheetNames[0]]);
+      for(const r of rows) {
+        const c = String(r["품번"]);
+        const tbl = groups.some(g=>g.code===c) ? 'groups' : 'master_products';
+        await supabase.from(tbl).update({ cost: Number(r["원가"]||0), price_sale: Number(r["행사가"]||0) }).eq('code', c);
+      }
+      alert("✅ 변경 업로드 완료"); 
+      fetchData();
+    };
+    reader.readAsBinaryString(file); e.target.value = null;
+  };
+
+  // 📦 [Step 1] 온라인재고: (안전하게 String 래핑하여 에러 방지)
   const handleInventoryExcelUpload = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
@@ -343,16 +398,16 @@ function App() {
         
         for (let i = 0; i < Math.min(15, rows.length); i++) {
           const row = rows[i];
-          const foundC = row.findIndex(cell => String(cell).replace(/\s/g, '') === "상품코드");
-          const foundX = row.findIndex(cell => String(cell).replace(/\s/g, '') === "합재고");
+          const foundC = row.findIndex(cell => String(cell || "").replace(/\s/g, '') === "상품코드");
+          const foundX = row.findIndex(cell => String(cell || "").replace(/\s/g, '') === "합재고");
           if (foundC !== -1 && foundX !== -1) {
              headerRowIndex = i;
              cIdx = foundC; xIdx = foundX;
-             lIdx = row.findIndex(cell => String(cell).replace(/\s/g, '') === "바코드");
-             pIdx = row.findIndex(cell => String(cell).replace(/\s/g, '').includes("옵션별칭1"));
-             rIdx = row.findIndex(cell => String(cell).replace(/\s/g, '').includes("옵션별칭2"));
-             tIdx = row.findIndex(cell => String(cell).replace(/\s/g, '').includes("옵션별칭3"));
-             vIdx = row.findIndex(cell => String(cell).replace(/\s/g, '').includes("옵션별칭4"));
+             lIdx = row.findIndex(cell => String(cell || "").replace(/\s/g, '') === "바코드");
+             pIdx = row.findIndex(cell => String(cell || "").replace(/\s/g, '').includes("옵션별칭1"));
+             rIdx = row.findIndex(cell => String(cell || "").replace(/\s/g, '').includes("옵션별칭2"));
+             tIdx = row.findIndex(cell => String(cell || "").replace(/\s/g, '').includes("옵션별칭3"));
+             vIdx = row.findIndex(cell => String(cell || "").replace(/\s/g, '').includes("옵션별칭4"));
              break;
           }
         }
@@ -365,7 +420,7 @@ function App() {
 
         for (let i = headerRowIndex + 1; i < rows.length; i++) {
           const row = rows[i];
-          const cValue = String(row[cIdx] || "").trim(); // 단품코드 (100353-0017)
+          const cValue = String(row[cIdx] || "").trim();
           const xValue = Number(String(row[xIdx] || "0").replace(/,/g, '')) || 0; 
           
           const lValue = lIdx !== -1 ? String(row[lIdx] || "").trim() : "";
@@ -375,8 +430,12 @@ function App() {
           const vValue = vIdx !== -1 ? String(row[vIdx] || "").trim() : "";
 
           if (cValue && cValue !== "상품코드") {
-            // 💡 [핵심] 오직 정확히 일치하는 단품만 찾습니다. 부모 그룹으로 억지로 연결하지 않습니다!
-            const targetProduct = allProducts.find(p => p.code === cValue);
+            let targetProduct = allProducts.find(p => p.code === cValue);
+            // fallback (if exact doesn't exist, check base code)
+            if (!targetProduct && cValue.includes('-')) {
+                const baseCode = cValue.split('-')[0];
+                targetProduct = allProducts.find(p => p.code === baseCode);
+            }
 
             if (targetProduct) {
               const mainCode = targetProduct.code;
@@ -401,9 +460,12 @@ function App() {
           const existingProduct = allProducts.find(p => p.code === code);
 
           if (existingProduct) {
-            const existingBarcodes = existingProduct.barcode ? existingProduct.barcode.split(',').map(s=>s.trim()) : [];
+            // 💡 에러 원인 차단: p.barcode가 null이거나 숫자일 수 있으므로 철저하게 String() 래핑
+            const barcodeStr = String(existingProduct.barcode || "");
+            const existingBarcodes = barcodeStr ? barcodeStr.split(',').map(s=>s.trim()) : [];
+            
             existingBarcodes.forEach(b => { if(b) barcodeMap[code].add(b); });
-            const newBarcodeStr = Array.from(barcodeMap[code]).join(',');
+            const newBarcodeStr = Array.from(barcodeMap[code]).filter(Boolean).join(',');
             
             updatePromises.push(
               supabase.from(targetTable).update({ stock: stockVal, barcode: newBarcodeStr }).eq('code', code)
@@ -412,7 +474,7 @@ function App() {
           }
         }
         await Promise.all(updatePromises);
-        alert(`📦 온라인재고 피벗 업데이트 완료!\n\n✅ 100% 매칭되어 재고가 들어간 단품: ${updatedCount}건`);
+        alert(`📦 온라인재고 피벗 업데이트 완료!\n\n✅ 100% 매칭되어 재고가 들어간 품번: ${updatedCount}건`);
         fetchData();
       } catch (err) { 
         console.error(err);
@@ -423,7 +485,7 @@ function App() {
     e.target.value = null; 
   };
 
-  // 🏢 [Step 2] 본사재고: 위험한 찍기 금지! 정확한 단품에 꽂고, 엑셀의 색상/사이즈로 안전하게 보완!
+  // 🏢 [Step 2] 본사재고: 억지 매칭 완전 삭제! '바코드 사전'과 '품번'으로만 완벽 1:1 매칭
   const handleHqStockExcelUpload = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
@@ -436,18 +498,17 @@ function App() {
         const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
 
         let headerRowIndex = -1;
-        let barcodeColIdx = -1, stockColIdx = -1, colorColIdx = -1, sizeColIdx = -1;
+        let barcodeColIdx = -1;
+        let stockColIdx = -1;
 
         for (let i = 0; i < Math.min(15, rows.length); i++) {
           const row = rows[i];
-          const bIdx = row.findIndex(cell => String(cell).replace(/\s/g, '') === "상품바코드");
-          const sIdx = row.findIndex(cell => String(cell).replace(/\s/g, '') === "실재고");
+          const bIdx = row.findIndex(cell => String(cell || "").replace(/\s/g, '') === "상품바코드");
+          const sIdx = row.findIndex(cell => String(cell || "").replace(/\s/g, '') === "실재고");
           if (bIdx !== -1 && sIdx !== -1) {
              headerRowIndex = i;
              barcodeColIdx = bIdx;
              stockColIdx = sIdx;
-             colorColIdx = row.findIndex(cell => String(cell).replace(/\s/g, '') === "색상");
-             sizeColIdx = row.findIndex(cell => String(cell).replace(/\s/g, '') === "사이즈");
              break;
           }
         }
@@ -466,30 +527,20 @@ function App() {
           const nValue = Number(String(row[stockColIdx] || "0").replace(/,/g, '')) || 0;
 
           if (cValue && cValue !== "상품바코드" && cValue !== "기본항목") {
-            // 💡 1순위: 바코드 사전에서 100% 일치하는 단품 찾기
+            // 💡 [핵심] 억지로 색상/사이즈를 비교하는 코드를 삭제하고, 
+            // 오직 "바코드 사전에 있거나", "단품 코드가 완벽히 일치할 때"만 넣습니다.
             let targetProduct = allProducts.find(p => {
-              const barcodeArray = p.barcode ? p.barcode.split(',').map(s=>s.trim()) : [];
+              const barcodeStr = String(p.barcode || "");
+              const barcodeArray = barcodeStr ? barcodeStr.split(',').map(s=>s.trim()) : [];
               return barcodeArray.includes(cValue) || p.code === cValue;
             });
-
-            // 💡 2순위 스마트 예외 처리: 바코드가 사전에 없더라도, '스타일넘버 + 색상 + 사이즈'가 모두 일치하는 단품에만 안전하게 넣기!
-            if (!targetProduct && colorColIdx !== -1 && sizeColIdx !== -1) {
-              const colorVal = String(row[colorColIdx] || "").trim().toUpperCase();
-              const sizeVal = String(row[sizeColIdx] || "").trim().toUpperCase();
-              
-              targetProduct = allProducts.find(p => {
-                  if (!p.style_no || !cValue.includes(p.style_no)) return false;
-                  const nameStr = String(p.name || "").toUpperCase();
-                  // 이름 안에 엑셀의 색상(BK)과 사이즈(95)가 둘 다 들어있는 단품만 픽업!
-                  return nameStr.includes(colorVal) && (nameStr.includes(sizeVal) || nameStr.includes(Number(sizeVal).toString()));
-              });
-            }
 
             if (targetProduct) {
               const mainCode = targetProduct.code;
               hqMap[mainCode] = (hqMap[mainCode] || 0) + nValue;
               matchedCount++;
             } else {
+              // 찾지 못한 타 브랜드 상품 등은 완전히 무시합니다 (패스)
               unmatchedCount++;
             }
           }
@@ -507,7 +558,7 @@ function App() {
         }
 
         await Promise.all(updatePromises);
-        alert(`🏢 본사재고 1:1 단품 매핑 완료!\n\n✅ 엑셀에서 찾은 바코드: ${matchedCount}건\n✅ DB 단품 수량 업데이트: ${updatedDbCount}품번\n❌ 사전에 없어 실패한 건수: ${unmatchedCount}건`);
+        alert(`🏢 본사재고 1:1 엄격 매핑 완료!\n\n✅ 일치하여 등록된 바코드: ${matchedCount}건\n✅ DB 단품 수량 업데이트: ${updatedDbCount}품번\n❌ 무시된 타상품/미등록 바코드: ${unmatchedCount}건`);
         fetchData();
       } catch (err) {
         console.error(err);
@@ -518,6 +569,7 @@ function App() {
     e.target.value = null; 
   };
 
+  // 🛒 발주 업로드도 동일하게 엄격한 1:1 매칭 적용
   const handleOrderExcelUpload = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
@@ -545,9 +597,9 @@ function App() {
           if (match) {
             const styleCode = match[1].trim();
 
-            // 발주도 어설픈 찍기 삭제! 바코드 사전에 있는 단품에만 정확히 꽂기
             let targetProduct = allProducts.find(p => {
-              const barcodeArray = p.barcode ? p.barcode.split(',').map(s=>s.trim()) : [];
+              const barcodeStr = String(p.barcode || "");
+              const barcodeArray = barcodeStr ? barcodeStr.split(',').map(s=>s.trim()) : [];
               return barcodeArray.includes(styleCode) || p.code === styleCode;
             });
 
@@ -583,7 +635,7 @@ function App() {
         }
 
         await Promise.all(updatePromises);
-        alert(`🛒 발주 데이터 1:1 매핑 완료!\n\n✅ 찾은 품번: ${matchedCount}건\n✅ 단품 업데이트: ${updatedDbCount}품번\n❌ 실패한 건수: ${unmatchedCount}건`);
+        alert(`🛒 발주 데이터 1:1 매핑 완료!\n\n✅ 일치하여 등록된 품번: ${matchedCount}건\n✅ DB 단품 업데이트: ${updatedDbCount}품번\n❌ 무시된 타상품/미등록 품번: ${unmatchedCount}건`);
         fetchData();
       } catch (err) {
         console.error(err);
@@ -968,6 +1020,20 @@ function App() {
                 />
                 <button onClick={() => setSearchTerm(searchInput)} style={{padding:'6px 15px', background:PRIMARY_COLOR, color:'#fff', border:'none', borderRadius:'6px', fontSize:'12px', cursor:'pointer', whiteSpace:'nowrap'}}>조회</button>
               </div>
+            </div>
+
+            <div style={{ background:'#ebf3f9', padding:'8px', borderRadius:'8px', marginBottom:'15px', display:'flex', gap:'8px', alignItems:'center', border:'1px solid #3498db', overflowX:'auto', whiteSpace:'nowrap' }}>
+              <strong style={{fontSize:'11px'}}>⚡ 일괄변경 ({selectedCodes.length}):</strong>
+              <input type="number" placeholder="원가" onChange={e => setBatchInput({...batchInput, cost: e.target.value})} style={batchInputStyle} />
+              <input type="number" placeholder="Tag가" onChange={e => setBatchInput({...batchInput, tagPrice: e.target.value})} style={batchInputStyle} />
+              <input type="number" placeholder="네이버" onChange={e => setBatchInput({...batchInput, priceNaver: e.target.value})} style={batchInputStyle} />
+              <input type="number" placeholder="쿠팡" onChange={e => setBatchInput({...batchInput, priceCoupang: e.target.value})} style={batchInputStyle} />
+              <input type="number" placeholder="로켓" onChange={e => setBatchInput({...batchInput, priceRocket: e.target.value})} style={batchInputStyle} />
+              <input type="number" placeholder="골드" onChange={e => setBatchInput({...batchInput, priceGold: e.target.value})} style={batchInputStyle} />
+              <input type="number" placeholder="행사가" onChange={e => setBatchInput({...batchInput, priceSale: e.target.value})} style={batchInputStyle} />
+              <button onClick={handleBatchUpdate} style={{padding:'4px 10px', background:'#e67e22', color:'#fff', border:'none', borderRadius:'4px', fontSize:'11px', cursor:'pointer', fontWeight:'bold'}}>적용</button>
+              <div style={{ width: '1px', height: '20px', background: '#3498db', margin: '0 2px' }}></div>
+              <button onClick={handleBatchDelete} style={{padding:'4px 10px', background:'#e74c3c', color:'#fff', border:'none', borderRadius:'4px', fontSize:'11px', cursor:'pointer', fontWeight:'bold'}}>🗑️ 삭제</button>
             </div>
 
             <div style={{ background:'#fff', borderRadius:'12px', overflowX:'auto', boxShadow:'0 4px 15px rgba(0,0,0,0.05)', maxHeight: isMobile ? '65vh' : '80vh' }}>
