@@ -44,7 +44,7 @@ function App() {
   const [collapsedGroups, setCollapsedGroups] = useState([]);
 
   // ==========================================
-  // 2. 초기 데이터 로드 & 화면 감지
+  // 2. 초기 데이터 로드
   // ==========================================
   useEffect(() => { 
     fetchData(); 
@@ -72,7 +72,7 @@ function App() {
   };
 
   // ==========================================
-  // 3. 유틸리티 및 데이터 가공
+  // 3. 유틸리티 및 데이터 가공 (UseMemo 최적화)
   // ==========================================
   const handleSort = (key) => {
     let direction = 'asc';
@@ -380,6 +380,7 @@ function App() {
     reader.readAsBinaryString(file); e.target.value = null;
   };
 
+  // 📦 [핵심 1] 온라인재고 업데이트 시 DB에 '바코드 사전' 영구 저장!
   const handleInventoryExcelUpload = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
@@ -390,16 +391,30 @@ function App() {
         const workbook = XLSX.read(ev.target.result, { type: 'binary' });
         const sheet = workbook.Sheets[workbook.SheetNames[0]];
         const rows = XLSX.utils.sheet_to_json(sheet, { header: "A", defval: "" });
+        
         const stockMap = {};
+        const barcodeMap = {}; // 품번별로 엑셀의 모든 옵션별칭(바코드)을 모아두는 맵
 
         rows.forEach(row => {
-          const cValue = String(row["C"] || "").trim(); 
-          const xValue = Number(row["X"]) || 0;         
+          const cValue = String(row["C"] || "").trim(); // 상품코드 (100032-0001)
+          const xValue = Number(row["X"]) || 0;         // 합재고
+          
+          // P, R, T, V열에서 바코드(옵션별칭) 데이터 추출
+          const pValue = String(row["P"] || "").trim(); 
+          const rValue = String(row["R"] || "").trim();
+          const tValue = String(row["T"] || "").trim();
+          const vValue = String(row["V"] || "").trim();
 
           if (cValue && cValue !== "상품코드") {
-            const baseCode = cValue.split('-')[0];
+            const baseCode = cValue.split('-')[0]; // 진짜 품번 추출 (예: 100032)
             if (baseCode) {
               stockMap[baseCode] = (stockMap[baseCode] || 0) + xValue;
+              
+              if (!barcodeMap[baseCode]) barcodeMap[baseCode] = new Set();
+              if (pValue) barcodeMap[baseCode].add(pValue);
+              if (rValue) barcodeMap[baseCode].add(rValue);
+              if (tValue) barcodeMap[baseCode].add(tValue);
+              if (vValue) barcodeMap[baseCode].add(vValue);
             }
           }
         });
@@ -410,15 +425,23 @@ function App() {
         for (const [code, stockVal] of Object.entries(stockMap)) {
           const isGroup = groups.some(g => g.code === code);
           const targetTable = isGroup ? 'groups' : 'master_products';
-          const exists = isGroup || masterProducts.some(p => p.code === code);
+          
+          const existingProduct = isGroup ? groups.find(g => g.code === code) : masterProducts.find(p => p.code === code);
 
-          if (exists) {
-            updatePromises.push(supabase.from(targetTable).update({ stock: stockVal }).eq('code', code));
+          if (existingProduct) {
+            // 기존 DB 바코드와 엑셀에서 새로 긁어온 바코드를 병합
+            const existingBarcodes = existingProduct.barcode ? existingProduct.barcode.split(',') : [];
+            existingBarcodes.forEach(b => barcodeMap[code].add(b));
+            const newBarcodeStr = Array.from(barcodeMap[code]).join(',');
+
+            updatePromises.push(
+              supabase.from(targetTable).update({ stock: stockVal, barcode: newBarcodeStr }).eq('code', code)
+            );
             updatedCount++;
           }
         }
         await Promise.all(updatePromises);
-        alert(`📦 온라인재고 업데이트 성공!\n(총 ${updatedCount}개 품번의 재고가 반영되었습니다.)`);
+        alert(`📦 온라인재고 업데이트 성공!\n(총 ${updatedCount}개 품번의 재고 및 '바코드 사전'이 저장되었습니다.)`);
         fetchData();
       } catch (err) { alert("❌ 재고 엑셀 처리 중 오류가 발생했습니다."); }
     };
@@ -426,7 +449,7 @@ function App() {
     e.target.value = null; 
   };
 
-  // 🏢 [핵심 신규] 본사재고 C열(상품바코드) - N열(실재고) 매핑 로직
+  // 🏢 [핵심 2] 본사재고 업데이트 시 만들어둔 '바코드 사전'으로 정확하게 매핑!
   const handleHqStockExcelUpload = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
@@ -436,18 +459,18 @@ function App() {
       try {
         const workbook = XLSX.read(ev.target.result, { type: 'binary' });
         const sheet = workbook.Sheets[workbook.SheetNames[0]];
-        // 강제로 A, B, C 열 지정 (1행이 불필요한 데이터라도 무시)
         const rows = XLSX.utils.sheet_to_json(sheet, { header: "A", defval: "" });
 
         const hqMap = {}; 
 
         rows.forEach(row => {
-          const cValue = String(row["C"] || "").trim(); // 상품바코드 (예: CB3JMURH13BK085)
+          const cValue = String(row["C"] || "").trim(); // 상품바코드 (예: MW3EBWPL84BK064)
           const nValue = Number(row["N"]) || 0;         // 실재고
 
           if (cValue && cValue !== "상품바코드") {
-            // DB의 style_no 또는 code가 엑셀의 C열(바코드)에 포함되어 있는지 확인
+            // 💡 마법의 로직: DB에 저장된 '바코드 사전(barcode)'에 이 바코드가 포함되어 있으면 매핑!
             const targetProduct = masterProducts.find(p => 
+              (p.barcode && p.barcode.includes(cValue)) || 
               (p.style_no && cValue.includes(p.style_no)) || 
               (p.code && cValue.includes(p.code))
             );
@@ -466,9 +489,7 @@ function App() {
           const isGroup = groups.some(g => g.code === code);
           const targetTable = isGroup ? 'groups' : 'master_products';
 
-          updatePromises.push(
-            supabase.from(targetTable).update({ hq_stock: stockVal }).eq('code', code)
-          );
+          updatePromises.push(supabase.from(targetTable).update({ hq_stock: stockVal }).eq('code', code));
           updatedCount++;
         }
 
@@ -484,6 +505,7 @@ function App() {
     e.target.value = null; 
   };
 
+  // 🛒 [핵심 3] 발주 데이터 업데이트 시에도 '바코드 사전' 활용!
   const handleOrderExcelUpload = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
@@ -505,9 +527,11 @@ function App() {
 
           const match = aValue.match(/\(([^)]+)\)/);
           if (match) {
-            const styleCode = match[1].trim();
+            const styleCode = match[1].trim(); // 괄호 안의 옵션별칭/바코드
 
+            // 💡 마법의 로직: DB에 저장된 '바코드 사전(barcode)'에서 찾음!
             const targetProduct = masterProducts.find(p => 
+              (p.barcode && p.barcode.includes(styleCode)) ||
               (p.style_no && styleCode.includes(p.style_no)) || 
               (p.code && styleCode.includes(p.code))
             );
@@ -610,6 +634,24 @@ function App() {
     flexDirection: isMobile ? 'row' : 'column', alignItems: 'center', justifyContent: 'center', marginBottom: isMobile ? '0' : '15px', 
     cursor: 'pointer', backgroundColor: active ? PRIMARY_COLOR : 'transparent', color: active ? '#fff' : '#b2bec3', border: active ? 'none' : '1px solid #455a64', gap: isMobile ? '5px' : '0'
   });
+
+  const FilterBar = () => (
+    <div style={{ background:'#fff', padding:'12px', borderRadius:'12px', marginBottom:'10px', display:'flex', gap:'10px', alignItems:'center', flexWrap:'wrap', boxShadow:'0 2px 5px rgba(0,0,0,0.05)' }}>
+      <select value={filterCategory} onChange={e => setFilterCategory(e.target.value)} style={{padding:'6px', borderRadius:'6px', border:'1px solid #ddd', fontSize:'12px', flex: isMobile? '1 1 45%' : 'none'}}><option value="전체">복종 전체</option>{categories.map(c => <option key={c} value={c}>{c}</option>)}</select>
+      <select value={filterBrand} onChange={e => setFilterBrand(e.target.value)} style={{padding:'6px', borderRadius:'6px', border:'1px solid #ddd', fontSize:'12px', flex: isMobile? '1 1 45%' : 'none'}}><option value="전체">브랜드 전체</option>{brands.map(b => <option key={b} value={b}>{b}</option>)}</select>
+      <select value={filterSeason} onChange={e => setFilterSeason(e.target.value)} style={{padding:'6px', borderRadius:'6px', border:'1px solid #ddd', fontSize:'12px', flex: isMobile? '1 1 45%' : 'none'}}><option value="전체">시즌 전체</option>{seasons.map(s => <option key={s} value={s}>{s}</option>)}</select>
+      <div style={{ display:'flex', width: isMobile ? '100%' : 'auto', gap:'5px' }}>
+        <input 
+          placeholder="검색 (품번,상품명) 후 엔터" 
+          value={searchInput} 
+          onChange={e => setSearchInput(e.target.value)} 
+          onKeyDown={e => { if(e.key === 'Enter') setSearchTerm(searchInput); }}
+          style={{padding:'6px', flex:1, minWidth:'120px', border:'1px solid #ddd', borderRadius:'6px', fontSize:'12px'}} 
+        />
+        <button onClick={() => setSearchTerm(searchInput)} style={{padding:'6px 15px', background:PRIMARY_COLOR, color:'#fff', border:'none', borderRadius:'6px', fontSize:'12px', cursor:'pointer', whiteSpace:'nowrap'}}>조회</button>
+      </div>
+    </div>
+  );
 
   return (
     <div style={{ display: 'flex', flexDirection: isMobile ? 'column' : 'row', minHeight: '100vh', width: '100vw', backgroundColor: '#f4f7f6', position: 'absolute', top: 0, left: 0, overflow: 'hidden' }}>
@@ -780,22 +822,7 @@ function App() {
               </div>
             </div>
             
-            {/* 🚀 분리 및 고정된 검색 필터 바 */}
-            <div style={{ background:'#fff', padding:'12px', borderRadius:'12px', marginBottom:'10px', display:'flex', gap:'10px', alignItems:'center', flexWrap:'wrap', boxShadow:'0 2px 5px rgba(0,0,0,0.05)' }}>
-              <select value={filterCategory} onChange={e => setFilterCategory(e.target.value)} style={{padding:'6px', borderRadius:'6px', border:'1px solid #ddd', fontSize:'12px', flex: isMobile? '1 1 45%' : 'none'}}><option value="전체">복종 전체</option>{categories.map(c => <option key={c} value={c}>{c}</option>)}</select>
-              <select value={filterBrand} onChange={e => setFilterBrand(e.target.value)} style={{padding:'6px', borderRadius:'6px', border:'1px solid #ddd', fontSize:'12px', flex: isMobile? '1 1 45%' : 'none'}}><option value="전체">브랜드 전체</option>{brands.map(b => <option key={b} value={b}>{b}</option>)}</select>
-              <select value={filterSeason} onChange={e => setFilterSeason(e.target.value)} style={{padding:'6px', borderRadius:'6px', border:'1px solid #ddd', fontSize:'12px', flex: isMobile? '1 1 45%' : 'none'}}><option value="전체">시즌 전체</option>{seasons.map(s => <option key={s} value={s}>{s}</option>)}</select>
-              <div style={{ display:'flex', width: isMobile ? '100%' : 'auto', gap:'5px' }}>
-                <input 
-                  placeholder="검색 (품번,상품명) 후 엔터" 
-                  value={searchInput} 
-                  onChange={e => setSearchInput(e.target.value)} 
-                  onKeyDown={e => { if(e.key === 'Enter') setSearchTerm(searchInput); }}
-                  style={{padding:'6px', flex:1, minWidth:'120px', border:'1px solid #ddd', borderRadius:'6px', fontSize:'12px'}} 
-                />
-                <button onClick={() => setSearchTerm(searchInput)} style={{padding:'6px 15px', background:PRIMARY_COLOR, color:'#fff', border:'none', borderRadius:'6px', fontSize:'12px', cursor:'pointer', whiteSpace:'nowrap'}}>조회</button>
-              </div>
-            </div>
+            <FilterBar />
 
             <div style={{ background:'#ebf3f9', padding:'8px', borderRadius:'8px', marginBottom:'15px', display:'flex', gap:'8px', alignItems:'center', border:'1px solid #3498db', overflowX:'auto', whiteSpace:'nowrap' }}>
               <strong style={{fontSize:'11px'}}>⚡ 일괄변경 ({selectedCodes.length}):</strong>
@@ -899,36 +926,21 @@ function App() {
                 <button onClick={handleCollapseAll} style={{padding:'6px 10px', background:'#7f8c8d', color:'#fff', border:'none', borderRadius:'4px', fontSize:'11px', cursor:'pointer', fontWeight:'bold'}}>▶ 전체닫기</button>
                 <div style={{width:'1px', background:'#ddd', margin:'0 2px'}}></div>
                 <label style={{fontSize:'11px', display:'flex', alignItems:'center', gap:'5px', cursor:'pointer', background:'#e8f8f5', padding:'6px 12px', borderRadius:'6px', border:'1px solid #1abc9c', color:'#16a085', fontWeight:'bold'}}>
-                  📦 온라인재고 (C열-X열)
+                  📦 온라인재고 (사전생성)
                   <input type="file" onChange={handleInventoryExcelUpload} style={{display:'none'}} />
                 </label>
                 <label style={{fontSize:'11px', display:'flex', alignItems:'center', gap:'5px', cursor:'pointer', background:'#f4ecf7', padding:'6px 12px', borderRadius:'6px', border:'1px solid #8e44ad', color:'#8e44ad', fontWeight:'bold'}}>
-                  🏢 본사재고 (C/N열)
+                  🏢 본사재고 (매핑업뎃)
                   <input type="file" onChange={handleHqStockExcelUpload} style={{display:'none'}} />
                 </label>
                 <label style={{fontSize:'11px', display:'flex', alignItems:'center', gap:'5px', cursor:'pointer', background:'#fef5e7', padding:'6px 12px', borderRadius:'6px', border:'1px solid #e67e22', color:'#d35400', fontWeight:'bold'}}>
-                  🛒 발주수량 (A/K/L/M열)
+                  🛒 발주수량 (매핑업뎃)
                   <input type="file" onChange={handleOrderExcelUpload} style={{display:'none'}} />
                 </label>
               </div>
             </div>
             
-            {/* 🚀 분리 및 고정된 검색 필터 바 */}
-            <div style={{ background:'#fff', padding:'12px', borderRadius:'12px', marginBottom:'10px', display:'flex', gap:'10px', alignItems:'center', flexWrap:'wrap', boxShadow:'0 2px 5px rgba(0,0,0,0.05)' }}>
-              <select value={filterCategory} onChange={e => setFilterCategory(e.target.value)} style={{padding:'6px', borderRadius:'6px', border:'1px solid #ddd', fontSize:'12px', flex: isMobile? '1 1 45%' : 'none'}}><option value="전체">복종 전체</option>{categories.map(c => <option key={c} value={c}>{c}</option>)}</select>
-              <select value={filterBrand} onChange={e => setFilterBrand(e.target.value)} style={{padding:'6px', borderRadius:'6px', border:'1px solid #ddd', fontSize:'12px', flex: isMobile? '1 1 45%' : 'none'}}><option value="전체">브랜드 전체</option>{brands.map(b => <option key={b} value={b}>{b}</option>)}</select>
-              <select value={filterSeason} onChange={e => setFilterSeason(e.target.value)} style={{padding:'6px', borderRadius:'6px', border:'1px solid #ddd', fontSize:'12px', flex: isMobile? '1 1 45%' : 'none'}}><option value="전체">시즌 전체</option>{seasons.map(s => <option key={s} value={s}>{s}</option>)}</select>
-              <div style={{ display:'flex', width: isMobile ? '100%' : 'auto', gap:'5px' }}>
-                <input 
-                  placeholder="검색 (품번,상품명) 후 엔터" 
-                  value={searchInput} 
-                  onChange={e => setSearchInput(e.target.value)} 
-                  onKeyDown={e => { if(e.key === 'Enter') setSearchTerm(searchInput); }}
-                  style={{padding:'6px', flex:1, minWidth:'120px', border:'1px solid #ddd', borderRadius:'6px', fontSize:'12px'}} 
-                />
-                <button onClick={() => setSearchTerm(searchInput)} style={{padding:'6px 15px', background:PRIMARY_COLOR, color:'#fff', border:'none', borderRadius:'6px', fontSize:'12px', cursor:'pointer', whiteSpace:'nowrap'}}>조회</button>
-              </div>
-            </div>
+            <FilterBar />
 
             <div style={{ background:'#fff', borderRadius:'12px', overflowX:'auto', boxShadow:'0 4px 15px rgba(0,0,0,0.05)', maxHeight: isMobile ? '65vh' : '80vh' }}>
               <table style={{ borderCollapse: 'separate', borderSpacing: 0, width: 'max-content' }}>
