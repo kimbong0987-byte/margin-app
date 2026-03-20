@@ -39,6 +39,9 @@ function App() {
   });
 
   const [isMobile, setIsMobile] = useState(window.innerWidth <= 768);
+  
+  // 🌟 [신규] 그룹(묶음/세트) 열기/닫기 상태 관리 (접혀있는 그룹 코드 저장)
+  const [collapsedGroups, setCollapsedGroups] = useState([]);
 
   // ==========================================
   // 2. 초기 데이터 로드 & 화면 감지
@@ -69,7 +72,7 @@ function App() {
   };
 
   // ==========================================
-  // 3. 유틸리티 및 데이터 가공 (★ 정렬 로직 완벽 연동)
+  // 3. 유틸리티 및 데이터 가공
   // ==========================================
   const handleSort = (key) => {
     let direction = 'asc';
@@ -84,7 +87,6 @@ function App() {
   };
 
   const handleSelectAll = (e) => {
-    // 3번 메뉴에서는 전체 선택 시 Ghost 여부와 상관없이 모두 선택!
     if (e.target.checked) {
       if (activeMenu === 'inventory') {
         setSelectedCodes(getProcessedData().map(item => item.code));
@@ -94,6 +96,13 @@ function App() {
     } else {
       setSelectedCodes([]);
     }
+  };
+
+  // 🌟 [신규] 그룹 열기/닫기 토글 함수
+  const toggleGroup = (code) => {
+    setCollapsedGroups(prev => 
+      prev.includes(code) ? prev.filter(c => c !== code) : [...prev, code]
+    );
   };
 
   const getProcessedData = () => {
@@ -120,7 +129,6 @@ function App() {
 
     let topLevel = [...matchedGroups, ...standaloneSingles];
 
-    // 💡 [정렬 전 계산 로직] 모든 합산 데이터와 마진을 먼저 계산해야 클릭 시 정렬이 가능합니다.
     topLevel = topLevel.map(item => {
        let calcItem = { ...item };
        let orderW1 = Number(calcItem.order_w1 || 0);
@@ -142,7 +150,7 @@ function App() {
        calcItem.order_w1 = orderW1;
        calcItem.order_w2 = orderW2;
        calcItem.order_w3 = orderW3;
-       calcItem.totalOrder = orderW3; // 총 발주합계 = 3주차 수량
+       calcItem.totalOrder = orderW3; 
        calcItem.stock = Number(calcItem.stock || 0);
        calcItem.hq_stock = Number(calcItem.hq_stock || 0);
        
@@ -153,7 +161,6 @@ function App() {
        return calcItem;
     });
 
-    // 이제 계산이 끝났으니 안전하게 정렬!
     topLevel.sort((a, b) => {
       let vA = a[sortConfig.key]; let vB = b[sortConfig.key];
       if (['cost', 'tag_price', 'price_sale', 'margin', 'stock', 'hq_stock', 'order_w1', 'order_w2', 'order_w3', 'totalOrder'].includes(sortConfig.key)) { 
@@ -321,7 +328,6 @@ function App() {
   };
 
   const downloadListExcel = () => {
-    // 3번 메뉴일 땐 고스트(중복) 여부 상관없이 엑셀 다운로드 허용
     let src = activeMenu === 'inventory' ? getProcessedData() : getProcessedData().filter(i => !i.isGhost);
     if (selectedCodes.length) src = src.filter(i => selectedCodes.includes(i.code));
     
@@ -357,7 +363,6 @@ function App() {
     reader.readAsBinaryString(file); e.target.value = null;
   };
 
-  // 📦 온라인재고 C열(품번파싱), X열(합산) 자동 업데이트
   const handleInventoryExcelUpload = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
@@ -371,8 +376,8 @@ function App() {
         const stockMap = {};
 
         rows.forEach(row => {
-          const cValue = String(row["C"] || "").trim(); // 상품코드
-          const xValue = Number(row["X"]) || 0;         // 합재고
+          const cValue = String(row["C"] || "").trim(); 
+          const xValue = Number(row["X"]) || 0;         
 
           if (cValue && cValue !== "상품코드") {
             const baseCode = cValue.split('-')[0];
@@ -404,7 +409,6 @@ function App() {
     e.target.value = null; 
   };
 
-  // 🛒 발주수량 A열(괄호추출), K/L/M열(합산) 자동 업데이트
   const handleOrderExcelUpload = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
@@ -419,10 +423,10 @@ function App() {
         const orderMap = {}; 
 
         rows.forEach(row => {
-          const aValue = String(row["A"] || "").trim(); // 상품명 + (스타일코드)
-          const kValue = Number(row["K"]) || 0; // 1주발주
-          const lValue = Number(row["L"]) || 0; // 2주발주
-          const mValue = Number(row["M"]) || 0; // 3주발주
+          const aValue = String(row["A"] || "").trim(); 
+          const kValue = Number(row["K"]) || 0; 
+          const lValue = Number(row["L"]) || 0; 
+          const mValue = Number(row["M"]) || 0; 
 
           const match = aValue.match(/\(([^)]+)\)/);
           if (match) {
@@ -652,6 +656,7 @@ function App() {
                 
                 <div style={{ padding: '10px', background: '#f8f9fa', borderRadius: '8px', border: '1px solid #ddd', marginBottom:'10px' }}>
                    <label style={{fontSize:'12px', fontWeight:'bold', display:'block', marginBottom:'8px'}}>🔗 구성 단품 매핑</label>
+                   
                    <Select isMulti closeMenuOnSelect={false} controlShouldRenderValue={false} placeholder="상품 검색..." 
                      options={(masterProducts || []).filter(p => {
                        const gName = (groupInput?.groupName || '').toLowerCase().trim();
@@ -664,15 +669,18 @@ function App() {
                      value={(groupInput?.children || []).map(c => ({ label: c?.name || '', value: c?.code || '', data: c }))} 
                      onChange={(opts) => setGroupInput({...groupInput, children: opts ? opts.map(o => o.data) : []})} 
                    />
+
                    <div style={{ marginTop: '10px', maxHeight: '120px', overflowY: 'auto', fontSize:'11px', background:'#fff', border:'1px solid #eee', borderRadius:'4px' }}>
                       {groupInput.children.length === 0 && <div style={{padding:'10px', color:'#999', textAlign:'center'}}>선택 상품 없음.</div>}
                       {groupInput.children.map((c, i) => <div key={i} style={{borderBottom:'1px solid #f0f0f0', padding:'6px 8px', display:'flex', justifyContent:'space-between'}}><span>└ {c?.name} ({c?.code})</span><b style={{color:'red', cursor:'pointer'}} onClick={()=>setGroupInput({...groupInput, children: groupInput.children.filter((_,idx)=>idx!==i)})}>삭제</b></div>)}
                    </div>
                 </div>
+                
                 <div style={{display:'flex', gap:'5px'}}>
                   <div style={{flex:1}}><label style={{fontSize:'11px'}}>총 원가</label><input type="number" value={groupInput.cost} onChange={e => setGroupInput({...groupInput, cost: e.target.value})} style={{...inputRegStyle, background:'#fff9db'}} /></div>
                   <div style={{flex:1}}><label style={{fontSize:'11px'}}>총 Tag가</label><input type="number" value={groupInput.tagPrice} onChange={e => setGroupInput({...groupInput, tagPrice: e.target.value})} style={{...inputRegStyle, background:'#fff9db'}} /></div>
                 </div>
+                
                 <button onClick={handleSaveGroup} style={{width:'100%', padding:'12px', background:'#6c5ce7', color:'#fff', border:'none', borderRadius:'6px', fontWeight:'bold', cursor:'pointer', marginTop:'10px'}}>그룹 저장하기</button>
               </div>
             </div>
@@ -738,7 +746,9 @@ function App() {
                 </thead>
                 <tbody>
                   {getProcessedData().map((item, idx) => {
-                    // 2번 메뉴에서는 여전히 Ghost 수정 불가 로직 유지
+                    // 💡 [핵심] 토글 기능 구현: 부모가 접혀있으면 숨김
+                    if (item.isMappedChild && collapsedGroups.includes(item.parentCode)) return null;
+
                     const isGhost = item.isGhost;
                     const isE = editingCode === item.code && !isGhost;
                     const isChild = item.isMappedChild;
@@ -754,7 +764,17 @@ function App() {
                         <td style={{ ...tdStyle, ...fX(cols.mng.l), ...cellS(cols.mng), background: trBg }}>{!isGhost ? (isE ? <button onClick={()=>saveEdit(item)} style={btnStyle}>완료</button> : <button onClick={()=>{setEditingCode(item.code); setEditRow({...item});}} style={btnStyle}>수정</button>) : <span style={{color:GHOST_COLOR}}>-</span>}</td>
                         <td style={{ ...tdStyle, ...fX(cols.brd.l), ...cellS(cols.brd), background: trBg }}>{isGhost ? <span style={{color:GHOST_COLOR}}>{item.brand}</span> : (isE ? <select value={editRow.brand||''} onChange={e=>setEditRow({...editRow, brand:e.target.value})} style={{fontSize:'10px', padding:'0', width:'100%'}}><option value="">-</option>{brands.map(b=><option key={b} value={b}>{b}</option>)}</select> : item.brand)}</td>
                         <td style={{ ...tdStyle, ...fX(cols.sea.l), ...cellS(cols.sea), background: trBg }}>{isGhost ? <span style={{color:GHOST_COLOR}}>{item.season}</span> : (isE ? <select value={editRow.season||''} onChange={e=>setEditRow({...editRow, season:e.target.value})} style={{fontSize:'10px', padding:'0', width:'100%'}}><option value="">-</option>{seasons.map(s=><option key={s} value={s}>{s}</option>)}</select> : item.season)}</td>
-                        <td style={{ ...tdStyle, ...fX(cols.typ.l), ...cellS(cols.typ), background: trBg, color: isGhost ? GHOST_COLOR : (item.type.includes('묶음')?'#6c5ce7':(isChild?'#b2bec3':'#999')), fontWeight: item.type.includes('묶음')?'bold':'normal' }}>{item.type}</td>
+                        
+                        {/* 💡 [신규 토글 버튼] 그룹일 경우 열기/닫기 아이콘 노출 */}
+                        <td style={{ ...tdStyle, ...fX(cols.typ.l), ...cellS(cols.typ), background: trBg, color: isGhost ? GHOST_COLOR : (item.type.includes('묶음')||item.type.includes('세트')?'#6c5ce7':(isChild?'#b2bec3':'#999')), fontWeight: (item.type.includes('묶음')||item.type.includes('세트'))?'bold':'normal' }}>
+                          {(item.type.includes('묶음') || item.type.includes('세트')) && (
+                            <span onClick={() => toggleGroup(item.code)} style={{cursor:'pointer', marginRight:'4px', display:'inline-block', width:'12px', color:'#6c5ce7'}}>
+                              {collapsedGroups.includes(item.code) ? '▶' : '▼'}
+                            </span>
+                          )}
+                          {item.type}
+                        </td>
+                        
                         <td style={{ ...tdStyle, ...fX(cols.cod.l), ...cellS(cols.cod), background: trBg, paddingLeft: isChild?'10px':'2px' }}>{isChild && <span style={{color:'#bdc3c7', marginRight:'3px'}}>└</span>}<span style={{color: isGhost ? GHOST_COLOR : 'inherit'}}>{item.code}</span></td>
                         <td style={{ ...tdStyle, ...fX(cols.cat.l), ...cellS(cols.cat), background: trBg }}>{isGhost ? <span style={{color:GHOST_COLOR}}>{item.category}</span> : (isE ? <select value={editRow.category||''} onChange={e=>setEditRow({...editRow, category:e.target.value})} style={{fontSize:'10px', padding:'0', width:'100%'}}>{categories.map(c=><option key={c} value={c}>{c}</option>)}</select> : item.category)}</td>
                         <td style={{ ...tdStyle, ...fX(cols.sty.l), ...cellS(cols.sty), background: trBg }}>{isGhost ? <span style={{color:GHOST_COLOR}}>{item.style_no}</span> : (isE ? <input value={editRow.style_no||''} onChange={e=>setEditRow({...editRow, style_no:e.target.value})} style={{width:'90%', fontSize:'10px'}}/> : item.style_no)}</td>
@@ -787,11 +807,11 @@ function App() {
               
               <div style={{ display: 'flex', gap: '8px', background:'#fff', padding:'8px', borderRadius:'8px', boxShadow:'0 2px 5px rgba(0,0,0,0.05)', width: isMobile ? '100%' : 'auto', boxSizing:'border-box', overflowX:'auto', whiteSpace:'nowrap' }}>
                 <label style={{fontSize:'11px', display:'flex', alignItems:'center', gap:'5px', cursor:'pointer', background:'#e8f8f5', padding:'6px 12px', borderRadius:'6px', border:'1px solid #1abc9c', color:'#16a085', fontWeight:'bold'}}>
-                  📦 온라인재고 (사방넷파일 업데이트C열-X열)
+                  📦 온라인재고 (C열-X열)
                   <input type="file" onChange={handleInventoryExcelUpload} style={{display:'none'}} />
                 </label>
                 <label style={{fontSize:'11px', display:'flex', alignItems:'center', gap:'5px', cursor:'pointer', background:'#fef5e7', padding:'6px 12px', borderRadius:'6px', border:'1px solid #e67e22', color:'#d35400', fontWeight:'bold'}}>
-                  🛒 발주수량 (천지재고파일 업데이트)
+                  🛒 발주수량 (A/K/L/M열)
                   <input type="file" onChange={handleOrderExcelUpload} style={{display:'none'}} />
                 </label>
               </div>
@@ -805,7 +825,6 @@ function App() {
                   <tr style={{ background: '#f8f9fa' }}>
                     <th style={{ ...thStyle, ...fX(cols.chk.l, true), ...cellS(cols.chk) }}><input type="checkbox" onChange={handleSelectAll} checked={selectedCodes.length > 0 && selectedCodes.length === getProcessedData().filter(i=>!i.isGhost).length} /></th>
                     <th style={{ ...thStyle, ...fX(cols.mng.l, true), ...cellS(cols.mng) }}>관리</th>
-                    {/* ✅ 모든 헤더에 onClick 정렬 이벤트를 연결했습니다! */}
                     <th style={{ ...thStyle, ...fX(cols.brd.l, true), ...cellS(cols.brd) }} onClick={() => handleSort('brand')}>브랜드</th>
                     <th style={{ ...thStyle, ...fX(cols.sea.l, true), ...cellS(cols.sea) }} onClick={() => handleSort('season')}>시즌</th>
                     <th style={{ ...thStyle, ...fX(cols.typ.l, true), ...cellS(cols.typ) }} onClick={() => handleSort('type')}>구분</th>
@@ -823,12 +842,13 @@ function App() {
                 </thead>
                 <tbody>
                   {getProcessedData().map((item, idx) => {
+                    // 💡 [핵심] 토글 기능 구현: 부모가 접혀있으면 숨김
+                    if (item.isMappedChild && collapsedGroups.includes(item.parentCode)) return null;
+
                     const isGhost = item.isGhost;
-                    // 💡 [핵심] 3번 메뉴는 Ghost(중복) 여부 상관없이 무조건 수정 가능하게 활성화!
                     const isE = editingCode === item.code; 
                     const isChild = item.isMappedChild;
                     const trBg = selectedCodes.includes(item.code) ? '#fff9db' : (isE ? '#e3f2fd' : (isChild ? '#f8fbfc' : '#fff'));
-                    // 중복 아이템 글씨색만 살짝 옅게 표시 (값은 보임)
                     const txtColor = isGhost ? '#95a5a6' : 'inherit'; 
                     
                     return (
@@ -839,11 +859,19 @@ function App() {
                         <td style={{ ...tdStyle, ...fX(cols.mng.l), ...cellS(cols.mng), background: trBg }}>
                            {isE ? <button onClick={()=>saveEdit(item)} style={btnStyle}>완료</button> : <button onClick={()=>{setEditingCode(item.code); setEditRow({...item});}} style={btnStyle}>수정</button>}
                         </td>
-                        
-                        {/* 💡 3번 메뉴는 '-' 가림막 없이 원래 데이터를 다 보여줍니다. */}
                         <td style={{ ...tdStyle, ...fX(cols.brd.l), ...cellS(cols.brd), background: trBg }}>{item.brand}</td>
                         <td style={{ ...tdStyle, ...fX(cols.sea.l), ...cellS(cols.sea), background: trBg }}>{item.season}</td>
-                        <td style={{ ...tdStyle, ...fX(cols.typ.l), ...cellS(cols.typ), background: trBg, fontWeight: item.type.includes('묶음')?'bold':'normal' }}>{item.type}</td>
+                        
+                        {/* 💡 [신규 토글 버튼] 그룹일 경우 열기/닫기 아이콘 노출 */}
+                        <td style={{ ...tdStyle, ...fX(cols.typ.l), ...cellS(cols.typ), background: trBg, fontWeight: (item.type.includes('묶음')||item.type.includes('세트'))?'bold':'normal' }}>
+                          {(item.type.includes('묶음') || item.type.includes('세트')) && (
+                            <span onClick={() => toggleGroup(item.code)} style={{cursor:'pointer', marginRight:'4px', display:'inline-block', width:'12px', color:'#6c5ce7'}}>
+                              {collapsedGroups.includes(item.code) ? '▶' : '▼'}
+                            </span>
+                          )}
+                          {item.type}
+                        </td>
+
                         <td style={{ ...tdStyle, ...fX(cols.cod.l), ...cellS(cols.cod), background: trBg, paddingLeft: isChild?'10px':'2px' }}>{isChild && <span style={{color:'#bdc3c7', marginRight:'3px'}}>└</span>}{item.code}</td>
                         <td style={{ ...tdStyle, ...fX(cols.cat.l), ...cellS(cols.cat), background: trBg }}>{item.category}</td>
                         <td style={{ ...tdStyle, ...fX(cols.sty.l), ...cellS(cols.sty), background: trBg }}>{item.style_no}</td>
