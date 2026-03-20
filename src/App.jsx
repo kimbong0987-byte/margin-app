@@ -132,7 +132,6 @@ function App() {
        calcItem.stock = Number(calcItem.stock || 0);
        calcItem.hq_stock = Number(calcItem.hq_stock || 0);
 
-       // 하위 단품이 1개라도 있는 그룹/세트라면 피벗 롤업 실행!
        if ((calcItem.type === '묶음' || calcItem.type === '세트') && calcItem.children && calcItem.children.length > 0) {
            let sumW1 = 0, sumW2 = 0, sumW3 = 0, sumStock = 0, sumHqStock = 0;
            calcItem.children.forEach(childSnapshot => {
@@ -324,66 +323,10 @@ function App() {
   };
 
   // ==========================================
-  // 📊 엑셀 처리 함수들 (★ 스마트 동적 스캔)
+  // 📊 엑셀 처리 함수들 (★ 1:1 완벽 매칭 로직)
   // ==========================================
-  const handleExcelUpload = async () => {
-    if (!selectedFile) return alert("파일을 선택해주세요.");
-    const reader = new FileReader();
-    reader.onload = async (e) => {
-      try {
-        const data = XLSX.read(e.target.result, { type: 'binary' });
-        const parsedRows = XLSX.utils.sheet_to_json(data.Sheets[data.SheetNames[0]]);
-        const parsed = parsedRows.map(i => ({ 
-          brand: i.브랜드 || '', season: i.시즌 || '', category: i.복종 || '미분류', 
-          code: String(i.품번 || ''), style_no: String(i.스타일 || ''), name: i.상품명 || '', 
-          cost: Number(i.원가 || 0), tag_price: Number(i.Tag가 || 0) 
-        }));
-        await supabase.from('master_products').upsert(parsed, { onConflict: 'code' });
-        alert("✅ 마스터 엑셀 업로드 성공!"); 
-        setSelectedFile(null);
-        fetchData();
-      } catch (err) { alert("엑셀 파싱 에러"); }
-    };
-    reader.readAsBinaryString(selectedFile);
-  };
-
-  const downloadListExcel = () => {
-    let src = activeMenu === 'inventory' ? processedData : processedData.filter(i => !i.isGhost);
-    if (selectedCodes.length) src = src.filter(i => selectedCodes.includes(i.code));
-    
-    const dataToExport = src.map(item => ({
-      "구분": item.type, "품번": item.code, "브랜드": item.brand || '', "시즌": item.season || '',
-      "복종": item.category || '', "스타일코드": item.style_no || '', "상품명": item.name || '',
-      "원가": item.cost || 0, "Tag가": item.tag_price || 0, "온라인재고": item.stock || 0, "본사재고": item.hq_stock || 0,
-      "1주발주": item.order_w1 || 0, "2주발주": item.order_w2 || 0, "3주발주": item.order_w3 || 0, "총 발주합계": item.totalOrder || 0,
-      "네이버(변경)": item.price_naver || 0, "쿠팡(변경)": item.price_coupang || 0, 
-      "로켓(변경)": item.price_rocket || 0, "골드(변경)": item.price_gold || 0, "행사가(변경)": item.price_sale || 0
-    }));
-
-    const ws = XLSX.utils.json_to_sheet(dataToExport);
-    const wb = XLSX.utils.book_new(); 
-    XLSX.utils.book_append_sheet(wb, ws, "조회데이터");
-    XLSX.writeFile(wb, "MD_라인시트_데이터.xlsx");
-  };
-
-  const handleListExcelUpload = async (e) => {
-    const file = e.target.files[0]; 
-    if(!file) return;
-    const reader = new FileReader();
-    reader.onload = async (ev) => {
-      const rows = XLSX.utils.sheet_to_json(XLSX.read(ev.target.result, {type:'binary'}).Sheets[XLSX.read(ev.target.result, {type:'binary'}).SheetNames[0]]);
-      for(const r of rows) {
-        const c = String(r["품번"]);
-        const tbl = groups.some(g=>g.code===c) ? 'groups' : 'master_products';
-        await supabase.from(tbl).update({ cost: Number(r["원가"]||0), price_sale: Number(r["행사가"]||0) }).eq('code', c);
-      }
-      alert("✅ 변경 업로드 완료"); 
-      fetchData();
-    };
-    reader.readAsBinaryString(file); e.target.value = null;
-  };
-
-  // 📦 [Step 1] 온라인재고: 단품코드(자르지않음)에 X열(재고)와 바코드 사전을 정확히 저장
+  
+  // 📦 [Step 1] 온라인재고: 어설픈 찍기(추측) 삭제! 오직 단품에만 저장!
   const handleInventoryExcelUpload = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
@@ -422,8 +365,7 @@ function App() {
 
         for (let i = headerRowIndex + 1; i < rows.length; i++) {
           const row = rows[i];
-          const cValue = String(row[cIdx] || "").trim();
-          // 오직 X열에서만 정확히 숫자를 빼옵니다.
+          const cValue = String(row[cIdx] || "").trim(); // 단품코드 (100353-0017)
           const xValue = Number(String(row[xIdx] || "0").replace(/,/g, '')) || 0; 
           
           const lValue = lIdx !== -1 ? String(row[lIdx] || "").trim() : "";
@@ -433,15 +375,11 @@ function App() {
           const vValue = vIdx !== -1 ? String(row[vIdx] || "").trim() : "";
 
           if (cValue && cValue !== "상품코드") {
-            let targetProduct = allProducts.find(p => p.code === cValue);
-            if (!targetProduct && cValue.includes('-')) {
-                const baseCode = cValue.split('-')[0];
-                targetProduct = allProducts.find(p => p.code === baseCode);
-            }
+            // 💡 [핵심] 오직 정확히 일치하는 단품만 찾습니다. 부모 그룹으로 억지로 연결하지 않습니다!
+            const targetProduct = allProducts.find(p => p.code === cValue);
 
             if (targetProduct) {
               const mainCode = targetProduct.code;
-              // X열의 값(재고)을 매칭된 품번에 합산
               stockMap[mainCode] = (stockMap[mainCode] || 0) + xValue; 
               
               if (!barcodeMap[mainCode]) barcodeMap[mainCode] = new Set();
@@ -474,7 +412,7 @@ function App() {
           }
         }
         await Promise.all(updatePromises);
-        alert(`📦 온라인재고 피벗 업데이트 완료!\n\n✅ 정확히 반영된 품번: ${updatedCount}건\n\n(하위 단품에 들어간 수량은 묶음에 자동으로 롤업 합산됩니다!)`);
+        alert(`📦 온라인재고 피벗 업데이트 완료!\n\n✅ 100% 매칭되어 재고가 들어간 단품: ${updatedCount}건`);
         fetchData();
       } catch (err) { 
         console.error(err);
@@ -485,7 +423,7 @@ function App() {
     e.target.value = null; 
   };
 
-  // 🏢 [Step 2] 본사재고: 정답지를 보고 단품에 정확히 수량 꽂기!
+  // 🏢 [Step 2] 본사재고: 위험한 찍기 금지! 정확한 단품에 꽂고, 엑셀의 색상/사이즈로 안전하게 보완!
   const handleHqStockExcelUpload = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
@@ -498,8 +436,7 @@ function App() {
         const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
 
         let headerRowIndex = -1;
-        let barcodeColIdx = -1;
-        let stockColIdx = -1;
+        let barcodeColIdx = -1, stockColIdx = -1, colorColIdx = -1, sizeColIdx = -1;
 
         for (let i = 0; i < Math.min(15, rows.length); i++) {
           const row = rows[i];
@@ -509,6 +446,8 @@ function App() {
              headerRowIndex = i;
              barcodeColIdx = bIdx;
              stockColIdx = sIdx;
+             colorColIdx = row.findIndex(cell => String(cell).replace(/\s/g, '') === "색상");
+             sizeColIdx = row.findIndex(cell => String(cell).replace(/\s/g, '') === "사이즈");
              break;
           }
         }
@@ -517,6 +456,7 @@ function App() {
 
         const hqMap = {}; 
         let matchedCount = 0;
+        let unmatchedCount = 0;
 
         const allProducts = [...masterProducts, ...groups];
 
@@ -526,22 +466,31 @@ function App() {
           const nValue = Number(String(row[stockColIdx] || "0").replace(/,/g, '')) || 0;
 
           if (cValue && cValue !== "상품바코드" && cValue !== "기본항목") {
+            // 💡 1순위: 바코드 사전에서 100% 일치하는 단품 찾기
             let targetProduct = allProducts.find(p => {
               const barcodeArray = p.barcode ? p.barcode.split(',').map(s=>s.trim()) : [];
-              return barcodeArray.includes(cValue);
+              return barcodeArray.includes(cValue) || p.code === cValue;
             });
 
-            if (!targetProduct) {
-               targetProduct = allProducts.find(p => 
-                  (p.style_no && p.style_no.length > 2 && cValue.includes(p.style_no)) || 
-                  (p.code && p.code.length > 2 && cValue.includes(p.code))
-               );
+            // 💡 2순위 스마트 예외 처리: 바코드가 사전에 없더라도, '스타일넘버 + 색상 + 사이즈'가 모두 일치하는 단품에만 안전하게 넣기!
+            if (!targetProduct && colorColIdx !== -1 && sizeColIdx !== -1) {
+              const colorVal = String(row[colorColIdx] || "").trim().toUpperCase();
+              const sizeVal = String(row[sizeColIdx] || "").trim().toUpperCase();
+              
+              targetProduct = allProducts.find(p => {
+                  if (!p.style_no || !cValue.includes(p.style_no)) return false;
+                  const nameStr = String(p.name || "").toUpperCase();
+                  // 이름 안에 엑셀의 색상(BK)과 사이즈(95)가 둘 다 들어있는 단품만 픽업!
+                  return nameStr.includes(colorVal) && (nameStr.includes(sizeVal) || nameStr.includes(Number(sizeVal).toString()));
+              });
             }
 
             if (targetProduct) {
               const mainCode = targetProduct.code;
               hqMap[mainCode] = (hqMap[mainCode] || 0) + nValue;
               matchedCount++;
+            } else {
+              unmatchedCount++;
             }
           }
         }
@@ -558,7 +507,7 @@ function App() {
         }
 
         await Promise.all(updatePromises);
-        alert(`🏢 본사재고 매핑 완료!\n\n✅ 바코드 찾음: ${matchedCount}건\n✅ 단품 꽂기 성공: ${updatedDbCount}품번\n\n(단품 재고는 상위 그룹에 자동 합산됩니다!)`);
+        alert(`🏢 본사재고 1:1 단품 매핑 완료!\n\n✅ 엑셀에서 찾은 바코드: ${matchedCount}건\n✅ DB 단품 수량 업데이트: ${updatedDbCount}품번\n❌ 사전에 없어 실패한 건수: ${unmatchedCount}건`);
         fetchData();
       } catch (err) {
         console.error(err);
@@ -582,6 +531,7 @@ function App() {
 
         const orderMap = {}; 
         let matchedCount = 0;
+        let unmatchedCount = 0;
 
         const allProducts = [...masterProducts, ...groups];
 
@@ -595,17 +545,11 @@ function App() {
           if (match) {
             const styleCode = match[1].trim();
 
+            // 발주도 어설픈 찍기 삭제! 바코드 사전에 있는 단품에만 정확히 꽂기
             let targetProduct = allProducts.find(p => {
               const barcodeArray = p.barcode ? p.barcode.split(',').map(s=>s.trim()) : [];
-              return barcodeArray.includes(styleCode);
+              return barcodeArray.includes(styleCode) || p.code === styleCode;
             });
-
-            if (!targetProduct) {
-                targetProduct = allProducts.find(p => 
-                    (p.style_no && p.style_no.length > 2 && styleCode.includes(p.style_no)) || 
-                    (p.code && p.code.length > 2 && styleCode.includes(p.code))
-                );
-            }
 
             if (targetProduct) {
               const mainCode = targetProduct.code;
@@ -615,6 +559,8 @@ function App() {
               orderMap[mainCode].w2 += lValue;
               orderMap[mainCode].w3 += mValue;
               matchedCount++;
+            } else {
+              unmatchedCount++;
             }
           }
         });
@@ -637,7 +583,7 @@ function App() {
         }
 
         await Promise.all(updatePromises);
-        alert(`🛒 발주 데이터 단품 매핑 완료!\n\n✅ 엑셀에서 찾은 품번: ${matchedCount}건\n✅ 단품 업데이트: ${updatedDbCount}품번`);
+        alert(`🛒 발주 데이터 1:1 매핑 완료!\n\n✅ 찾은 품번: ${matchedCount}건\n✅ 단품 업데이트: ${updatedDbCount}품번\n❌ 실패한 건수: ${unmatchedCount}건`);
         fetchData();
       } catch (err) {
         console.error(err);
