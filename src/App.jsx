@@ -156,8 +156,6 @@ function App() {
            calcItem.hq_stock = sumHqStock; 
        }
        
-       calcItem.totalOrder = calcItem.order_w1 + calcItem.order_w2 + calcItem.order_w3; 
-       
        const cost = Number(calcItem.cost || 0);
        const sale = Number(calcItem.price_sale || 0);
        calcItem.margin = (sale - Math.floor(sale * 0.18)) - cost - 5000;
@@ -167,7 +165,7 @@ function App() {
 
     topLevel.sort((a, b) => {
       let vA = a[sortConfig.key]; let vB = b[sortConfig.key];
-      if (['cost', 'tag_price', 'price_sale', 'margin', 'stock', 'hq_stock', 'order_w1', 'order_w2', 'order_w3', 'totalOrder'].includes(sortConfig.key)) { 
+      if (['cost', 'tag_price', 'price_sale', 'margin', 'stock', 'hq_stock', 'order_w1', 'order_w2', 'order_w3'].includes(sortConfig.key)) { 
         vA = Number(vA || 0); vB = Number(vB || 0); 
       } else { 
         vA = String(vA || "").toLowerCase(); vB = String(vB || "").toLowerCase(); 
@@ -208,8 +206,7 @@ function App() {
             order_w2: w2,
             order_w3: w3,
             stock: Number(liveChild.stock || 0),
-            hq_stock: Number(liveChild.hq_stock || 0),
-            totalOrder: w1 + w2 + w3
+            hq_stock: Number(liveChild.hq_stock || 0)
           });
 
           if (!isGhost) {
@@ -293,7 +290,7 @@ function App() {
       price_coupang: Number(editRow.price_coupang||0), price_rocket: Number(editRow.price_rocket||0), 
       price_gold: Number(editRow.price_gold||0), price_sale: Number(editRow.price_sale || 0),
       stock: Number(editRow.stock || 0),
-      hq_stock: Number(editRow.hq_stock || 0), 
+      hq_stock: Number(editRow.hq_stock || 0),
       order_w1: Number(editRow.order_w1 || 0),
       order_w2: Number(editRow.order_w2 || 0),
       order_w3: Number(editRow.order_w3 || 0),
@@ -338,7 +335,7 @@ function App() {
   };
 
   // ==========================================
-  // 📊 엑셀 처리 (★ 고정 열 및 한글 버그 수정)
+  // 📊 엑셀 처리
   // ==========================================
   const handleExcelUpload = async () => {
     if (!selectedFile) return alert("파일을 선택해주세요.");
@@ -361,18 +358,27 @@ function App() {
     reader.readAsBinaryString(selectedFile);
   };
 
+  // 💡 엑셀 다운로드 (항목 순서 변경 및 마진 추가, 총 발주합계 삭제)
   const downloadListExcel = () => {
     let src = activeMenu === 'inventory' ? processedData : processedData.filter(i => !i.isGhost);
     if (selectedCodes.length) src = src.filter(i => selectedCodes.includes(i.code));
     
-    const dataToExport = src.map(item => ({
-      "구분": item.type, "품번": item.code, "브랜드": item.brand || '', "시즌": item.season || '',
-      "복종": item.category || '', "스타일코드": item.style_no || '', "상품명": item.name || '',
-      "원가": item.cost || 0, "Tag가": item.tag_price || 0, "온라인재고": item.stock || 0, "본사재고": item.hq_stock || 0,
-      "1주발주": item.order_w1 || 0, "2주발주": item.order_w2 || 0, "3주발주": item.order_w3 || 0, "총 발주합계": item.totalOrder || 0,
-      "네이버(변경)": item.price_naver || 0, "쿠팡(변경)": item.price_coupang || 0, 
-      "로켓(변경)": item.price_rocket || 0, "골드(변경)": item.price_gold || 0, "행사가(변경)": item.price_sale || 0
-    }));
+    const dataToExport = src.map(item => {
+      const curS = Number(item.price_sale || 0);
+      const cost = Number(item.cost || 0);
+      const margin = (curS - Math.floor(curS * 0.18)) - cost - 5000;
+
+      return {
+        "구분": item.type, "품번": item.code, "브랜드": item.brand || '', "시즌": item.season || '',
+        "복종": item.category || '', "스타일코드": item.style_no || '', "상품명": item.name || '',
+        "원가": item.cost || 0, "Tag가": item.tag_price || 0,
+        "네이버(변경)": item.price_naver || 0, "쿠팡(변경)": item.price_coupang || 0, 
+        "로켓(변경)": item.price_rocket || 0, "골드(변경)": item.price_gold || 0, "행사가(변경)": item.price_sale || 0,
+        "마진": margin,
+        "온라인재고": item.stock || 0, "본사재고": item.hq_stock || 0,
+        "1주발주": item.order_w1 || 0, "2주발주": item.order_w2 || 0, "3주발주": item.order_w3 || 0
+      };
+    });
 
     const ws = XLSX.utils.json_to_sheet(dataToExport);
     const wb = XLSX.utils.book_new(); 
@@ -397,7 +403,6 @@ function App() {
     reader.readAsBinaryString(file); e.target.value = null;
   };
 
-  // 📦 [Step 1] 온라인재고: 엑셀의 C열을 자르고 메인코드에 모두 통합! 
   const handleInventoryExcelUpload = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
@@ -440,7 +445,6 @@ function App() {
           const row = rows[i];
           if (!row || !Array.isArray(row)) continue;
 
-          // 💡 [핵심] C열에서 '-' 뒤를 잘라내어 "메인코드"를 만듭니다.
           let cValue = cleanStr(row[cIdx]);
           if (cValue.includes('-')) {
               cValue = cValue.split('-')[0];
@@ -474,7 +478,6 @@ function App() {
           const isGroup = groups.some(g => g.code === code);
           const targetTable = isGroup ? 'groups' : 'master_products';
 
-          // 메인코드의 뱃속에 수십 개의 바코드 사전을 통째로 저장!
           const newBarcodeStr = Array.from(barcodeMap[code] || []).filter(Boolean).join(',');
           
           updatePromises.push(
@@ -483,7 +486,7 @@ function App() {
           updatedCount++;
         }
         await Promise.all(updatePromises);
-        alert(`📦 온라인재고 갱신 완료!\n\n✅ 메인코드 통합 업데이트: ${updatedCount}건\n(바코드 사전이 메인코드에 완벽하게 저장되었습니다!)`);
+        alert(`📦 온라인재고 갱신 완료!\n\n✅ 메인코드 통합 업데이트: ${updatedCount}건`);
         fetchData();
       } catch (err) { 
         console.error(err);
@@ -494,7 +497,6 @@ function App() {
     e.target.value = null; 
   };
 
-  // 🏢 [Step 2] 본사재고: C열과 N열만 콕 집어서 매핑!
   const handleHqStockExcelUpload = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
@@ -504,7 +506,6 @@ function App() {
       try {
         const workbook = XLSX.read(ev.target.result, { type: 'binary' });
         const sheet = workbook.Sheets[workbook.SheetNames[0]];
-        // 💡 사용자님 말씀대로 무조건 알파벳 열(A, B, C...) 기준 작동
         const rows = XLSX.utils.sheet_to_json(sheet, { header: "A", defval: "" });
 
         const hqMap = {}; 
@@ -514,7 +515,6 @@ function App() {
         const allProducts = [...masterProducts, ...groups];
 
         rows.forEach(row => {
-          // C열 (바코드), N열 (실재고) - 공백 완벽 제거
           const cValue = cleanStr(row["C"]);
           const nValue = Number(String(row["N"] || "0").replace(/,/g, '')) || 0;
 
@@ -557,7 +557,6 @@ function App() {
     e.target.value = null; 
   };
 
-  // 🛒 [Step 3] 발주수량: A열, K, L, M 열 고정해서 완벽 매핑!
   const handleOrderExcelUpload = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
@@ -567,7 +566,6 @@ function App() {
       try {
         const workbook = XLSX.read(ev.target.result, { type: 'binary' });
         const sheet = workbook.Sheets[workbook.SheetNames[0]];
-        // 💡 사용자님 말씀대로 무조건 알파벳 열 기준 작동
         const rows = XLSX.utils.sheet_to_json(sheet, { header: "A", defval: "" });
 
         const orderMap = {}; 
@@ -578,7 +576,6 @@ function App() {
 
         rows.forEach(row => {
           const aValue = String(row["A"] || ""); 
-          // K, L, M 콤마 제거 후 숫자 변환
           const kValue = Number(String(row["K"]||"0").replace(/,/g, '')) || 0; 
           const lValue = Number(String(row["L"]||"0").replace(/,/g, '')) || 0; 
           const mValue = Number(String(row["M"]||"0").replace(/,/g, '')) || 0; 
@@ -592,7 +589,6 @@ function App() {
           }
 
           if (styleCode && styleCode.length > 2 && !styleCode.includes("상품명")) {
-            // 바코드 사전에 100% 있을 때만 가져오기
             let targetProduct = allProducts.find(p => {
               const bArray = String(p.barcode || "").split(',').map(cleanStr);
               return bArray.includes(styleCode) || cleanStr(p.code) === styleCode;
@@ -639,6 +635,14 @@ function App() {
     };
     reader.readAsBinaryString(file);
     e.target.value = null; 
+  };
+
+  const downloadExcelTemplate = () => {
+    const templateData = [{ "브랜드": "몽벨", "시즌": "24SS", "복종": "상의", "품번": "TS-100", "스타일": "ST-01", "상품명": "기본 티셔츠", "원가": 5000, "Tag가": 20000 }];
+    const ws = XLSX.utils.json_to_sheet(templateData);
+    const wb = XLSX.utils.book_new(); 
+    XLSX.utils.book_append_sheet(wb, ws, "양식"); 
+    XLSX.writeFile(wb, "MD_상품등록양식.xlsx");
   };
 
   // ==========================================
@@ -982,6 +986,8 @@ function App() {
                 <button onClick={handleExpandAll} style={{padding:'6px 10px', background:'#34495e', color:'#fff', border:'none', borderRadius:'4px', fontSize:'11px', cursor:'pointer', fontWeight:'bold'}}>▼ 전체열기</button>
                 <button onClick={handleCollapseAll} style={{padding:'6px 10px', background:'#7f8c8d', color:'#fff', border:'none', borderRadius:'4px', fontSize:'11px', cursor:'pointer', fontWeight:'bold'}}>▶ 전체닫기</button>
                 <div style={{width:'1px', background:'#ddd', margin:'0 2px'}}></div>
+                {/* 💡 3번 재고발주 메뉴에도 엑셀 다운로드 버튼 추가 완료 */}
+                <button onClick={downloadListExcel} style={{padding:'6px 10px', background:'#27ae60', color:'#fff', border:'none', borderRadius:'4px', fontSize:'11px', cursor:'pointer', fontWeight:'bold'}}>📄 {selectedCodes.length > 0 ? "선택 엑셀" : "전체 엑셀"}</button>
                 <label style={{fontSize:'11px', display:'flex', alignItems:'center', gap:'5px', cursor:'pointer', background:'#e8f8f5', padding:'6px 12px', borderRadius:'6px', border:'1px solid #1abc9c', color:'#16a085', fontWeight:'bold'}}>
                   📦 온라인재고 (사전생성)
                   <input type="file" onChange={handleInventoryExcelUpload} style={{display:'none'}} />
@@ -1029,7 +1035,6 @@ function App() {
                     <th style={{...thStyle, width:'70px'}} onClick={() => handleSort('order_w1')}>1주발주</th>
                     <th style={{...thStyle, width:'70px'}} onClick={() => handleSort('order_w2')}>2주발주</th>
                     <th style={{...thStyle, width:'70px'}} onClick={() => handleSort('order_w3')}>3주발주</th>
-                    <th style={{...thStyle, width:'80px', color:'#2980b9'}} onClick={() => handleSort('totalOrder')}>총 발주합계</th>
                     <th style={{...thStyle, width:'80px', color:'#27ae60'}} onClick={() => handleSort('stock')}>온라인재고</th>
                     <th style={{...thStyle, width:'80px'}} onClick={() => handleSort('hq_stock')}>본사재고</th>
                   </tr>
@@ -1075,7 +1080,6 @@ function App() {
                         <td style={{...tdStyle, background: isE ? '#fff' : 'inherit'}}>{isE ? <input type="number" value={editRow.order_w1||0} onChange={e=>setEditRow({...editRow, order_w1:e.target.value})} style={{width:'50px', fontSize:'10px', textAlign:'center'}}/> : (item.order_w1 || 0).toLocaleString()}</td>
                         <td style={{...tdStyle, background: isE ? '#fff' : 'inherit'}}>{isE ? <input type="number" value={editRow.order_w2||0} onChange={e=>setEditRow({...editRow, order_w2:e.target.value})} style={{width:'50px', fontSize:'10px', textAlign:'center'}}/> : (item.order_w2 || 0).toLocaleString()}</td>
                         <td style={{...tdStyle, background: isE ? '#fff' : 'inherit'}}>{isE ? <input type="number" value={editRow.order_w3||0} onChange={e=>setEditRow({...editRow, order_w3:e.target.value})} style={{width:'50px', fontSize:'10px', textAlign:'center'}}/> : (item.order_w3 || 0).toLocaleString()}</td>
-                        <td style={{...tdStyle, color:'#2980b9', fontWeight:'bold'}}>{(item.totalOrder || 0).toLocaleString()}</td>
                         <td style={{...tdStyle, color:'#27ae60', fontWeight:'bold', background: isE ? '#fff' : 'inherit'}}>{isE ? <input type="number" value={editRow.stock||0} onChange={e=>setEditRow({...editRow, stock:e.target.value})} style={{width:'50px', fontSize:'10px', textAlign:'center'}}/> : (item.stock || 0).toLocaleString()}</td>
                         <td style={{...tdStyle, background: isE ? '#fff' : 'inherit'}}>{isE ? <input type="number" value={editRow.hq_stock||0} onChange={e=>setEditRow({...editRow, hq_stock:e.target.value})} style={{width:'50px', fontSize:'10px', textAlign:'center'}}/> : (item.hq_stock || 0).toLocaleString()}</td>
                       </tr>
