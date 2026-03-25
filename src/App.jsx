@@ -72,7 +72,7 @@ function App() {
   };
 
   // ==========================================
-  // 3. 유틸리티 및 데이터 가공
+  // 3. 유틸리티 및 데이터 가공 (피벗 롤업 최적화)
   // ==========================================
   const handleSort = (key) => {
     let direction = 'asc';
@@ -132,7 +132,8 @@ function App() {
        calcItem.stock = Number(calcItem.stock || 0);
        calcItem.hq_stock = Number(calcItem.hq_stock || 0);
 
-       if ((calcItem.type === '묶음' || calcItem.type === '세트') && calcItem.children && calcItem.children.length > 0) {
+       const typeStr = String(calcItem.type || '');
+       if ((typeStr.includes('묶음') || typeStr.includes('세트')) && calcItem.children && calcItem.children.length > 0) {
            let sumW1 = 0, sumW2 = 0, sumW3 = 0, sumStock = 0, sumHqStock = 0;
            calcItem.children.forEach(childSnapshot => {
                const liveChild = masterMap.get(childSnapshot.code);
@@ -179,7 +180,9 @@ function App() {
 
     topLevel.forEach(item => {
       expandedResult.push(item);
-      if ((item.type === '묶음' || item.type === '세트') && item.children) {
+      
+      const typeStr = String(item.type || '');
+      if ((typeStr.includes('묶음') || typeStr.includes('세트')) && item.children) {
         item.children.forEach(childSnapshot => {
           const liveChild = masterMap.get(childSnapshot.code);
           if (!liveChild) return; 
@@ -280,7 +283,8 @@ function App() {
   };
 
   const saveEdit = async (item) => {
-    const tbl = (item.type.includes('단품') || item.type.includes('구성')) ? 'master_products' : 'groups';
+    const typeStr = String(item.type || '');
+    const tbl = (typeStr.includes('단품') || typeStr.includes('구성')) ? 'master_products' : 'groups';
     await supabase.from(tbl).update({
       brand: editRow.brand, season: editRow.season, category: editRow.category, style_no: editRow.style_no, name: editRow.name, 
       cost: Number(editRow.cost), tag_price: Number(editRow.tag_price), price_naver: Number(editRow.price_naver || 0), 
@@ -335,7 +339,7 @@ function App() {
   // 📊 엑셀 처리 (★ 메인코드 통합 매핑의 핵심!)
   // ==========================================
   
-  // 📦 [Step 1] 온라인재고: 엑셀의 C열을 자르고 메인코드에 모두 통합!
+  // 📦 [Step 1] 온라인재고: 엑셀의 C열을 자르고 메인코드에 모두 통합! (에러 완벽 방어)
   const handleInventoryExcelUpload = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
@@ -378,29 +382,27 @@ function App() {
           const row = rows[i];
           if (!row || !Array.isArray(row)) continue;
 
-          // 💡 [핵심] C열에서 '-' 뒤를 잘라내어 "메인코드"를 만듭니다! (예: 100353-0017 -> 100353)
-          let cValue = String(row[cIdx] || "").replace(/\s+/g, '');
-          if (cValue.includes('-')) {
-              cValue = cValue.split('-')[0];
-          }
-
+          // 💡 [핵심] 공백 완벽 제거 후 '-' 기준으로 잘라 메인코드 추출
+          const rawCValue = String(row[cIdx] || "").replace(/\s+/g, '');
+          const baseCode = rawCValue.includes('-') ? rawCValue.split('-')[0] : rawCValue;
           const xValue = Number(String(row[xIdx] || "0").replace(/,/g, '')) || 0; 
 
-          if (cValue && cValue !== "상품코드") {
-            // 메인코드로 등록된 상품을 찾습니다.
-            const targetProduct = allProducts.find(p => String(p.code).replace(/\s+/g, '') === cValue);
+          if (baseCode && !baseCode.includes("상품코드")) {
+            // DB에서 메인코드로 등록된 상품 찾기 (공백 무시 비교)
+            const targetProduct = allProducts.find(p => String(p.code || "").replace(/\s+/g, '') === baseCode);
 
             if (targetProduct) {
               const mainCode = targetProduct.code;
-              // 해당 메인코드에 모든 파생 단품들의 재고와 바코드를 누적합니다.
+              // 메인코드 하나에 하위 재고를 모두 누적
               stockMap[mainCode] = (stockMap[mainCode] || 0) + xValue; 
               
               if (!barcodeMap[mainCode]) barcodeMap[mainCode] = new Set();
               
+              // 메인코드 하나에 하위 바코드들을 모두 누적 (빈칸, 0, - 등 무의미한 값 제외)
               [lIdx, pIdx, rIdx, tIdx, vIdx].forEach(idx => {
                   if (idx !== -1) {
                       const val = String(row[idx] || "").replace(/\s+/g, '');
-                      if (val && val !== "0") barcodeMap[mainCode].add(val);
+                      if (val && val !== "0" && val !== "-") barcodeMap[mainCode].add(val);
                   }
               });
             }
@@ -414,7 +416,7 @@ function App() {
           const isGroup = groups.some(g => g.code === code);
           const targetTable = isGroup ? 'groups' : 'master_products';
 
-          // 메인코드의 뱃속에 수십 개의 바코드 사전을 통째로 저장!
+          // 💡 과거 쓰레기 데이터 무시하고, 이번에 엑셀에서 읽어온 깨끗한 바코드들로만 덮어쓰기!
           const newBarcodeStr = Array.from(barcodeMap[code] || []).filter(Boolean).join(',');
           
           updatePromises.push(
@@ -423,7 +425,7 @@ function App() {
           updatedCount++;
         }
         await Promise.all(updatePromises);
-        alert(`📦 온라인재고 갱신 완료!\n\n✅ 메인코드 통합 업데이트: ${updatedCount}건\n(바코드 사전이 메인코드에 완벽하게 저장되었습니다!)`);
+        alert(`📦 온라인재고 갱신 완료!\n\n✅ 메인코드 통합 업데이트: ${updatedCount}건\n(바코드 사전이 새롭게 청소 및 저장되었습니다!)`);
         fetchData();
       } catch (err) { 
         console.error(err);
@@ -480,11 +482,11 @@ function App() {
           const nValue = Number(String(row[stockColIdx] || "0").replace(/,/g, '')) || 0;
 
           if (cValue && !cValue.includes("상품바코드") && !cValue.includes("기본항목")) {
-            // 💡 [핵심] 어설픈 style_no 추측 완전 삭제. 오직 '바코드 사전'에 있거나 품번이 똑같을 때만 통과!
+            // 💡 [핵심] 어설픈 찍기 완전 삭제! 오직 100% 일치할 때만.
             let targetProduct = allProducts.find(p => {
               const barcodeStr = String(p.barcode || "").replace(/\s+/g, '');
               const barcodeArray = barcodeStr ? barcodeStr.split(',') : [];
-              return barcodeArray.includes(cValue) || String(p.code).replace(/\s+/g, '') === cValue;
+              return barcodeArray.includes(cValue) || String(p.code || "").replace(/\s+/g, '') === cValue;
             });
 
             if (targetProduct) {
@@ -504,7 +506,7 @@ function App() {
           const isGroup = groups.some(g => g.code === code);
           const targetTable = isGroup ? 'groups' : 'master_products';
 
-          // 💡 여러 바코드의 재고가 하나의 메인코드로 완벽하게 모여서 덮어씌워집니다!
+          // 💡 여러 사이즈/컬러의 본사재고가 메인코드로 싹 더해져서 저장됩니다!
           updatePromises.push(supabase.from(targetTable).update({ hq_stock: stockVal }).eq('code', code));
           updatedDbCount++;
         }
@@ -521,7 +523,7 @@ function App() {
     e.target.value = null; 
   };
 
-  // 🛒 [Step 3] 발주수량: 본사재고와 동일하게 메인코드로 1:1 안전 매핑
+  // 🛒 [Step 3] 발주수량: 본사재고와 동일하게 메인코드로 1:1 매핑
   const handleOrderExcelUpload = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
@@ -554,11 +556,10 @@ function App() {
           }
 
           if (styleCode) {
-            // 💡 바코드 사전에 100% 있을 때만 가져오기
             let targetProduct = allProducts.find(p => {
               const barcodeStr = String(p.barcode || "").replace(/\s+/g, '');
               const barcodeArray = barcodeStr ? barcodeStr.split(',') : [];
-              return barcodeArray.includes(styleCode) || String(p.code).replace(/\s+/g, '') === styleCode;
+              return barcodeArray.includes(styleCode) || String(p.code || "").replace(/\s+/g, '') === styleCode;
             });
 
             if (targetProduct) {
@@ -605,8 +606,25 @@ function App() {
   };
 
   // ==========================================
-  // 기타 생략 (다운로드 및 레이아웃 관련 등)
+  // 기타 함수 (양식 다운로드 등)
   // ==========================================
+  const handleListExcelUpload = async (e) => {
+    const file = e.target.files[0]; 
+    if(!file) return;
+    const reader = new FileReader();
+    reader.onload = async (ev) => {
+      const rows = XLSX.utils.sheet_to_json(XLSX.read(ev.target.result, {type:'binary'}).Sheets[XLSX.read(ev.target.result, {type:'binary'}).SheetNames[0]]);
+      for(const r of rows) {
+        const c = String(r["품번"]);
+        const tbl = groups.some(g=>g.code===c) ? 'groups' : 'master_products';
+        await supabase.from(tbl).update({ cost: Number(r["원가"]||0), price_sale: Number(r["행사가"]||0) }).eq('code', c);
+      }
+      alert("✅ 변경 업로드 완료"); 
+      fetchData();
+    };
+    reader.readAsBinaryString(file); e.target.value = null;
+  };
+
   const downloadExcelTemplate = () => {
     const templateData = [{ "브랜드": "몽벨", "시즌": "24SS", "복종": "상의", "품번": "TS-100", "스타일": "ST-01", "상품명": "기본 티셔츠", "원가": 5000, "Tag가": 20000 }];
     const ws = XLSX.utils.json_to_sheet(templateData);
@@ -790,11 +808,12 @@ function App() {
                    
                    <Select isMulti closeMenuOnSelect={false} controlShouldRenderValue={false} placeholder="상품 검색하여 매핑 추가..." 
                      options={(masterProducts || []).filter(p => {
-                       const gName = (groupInput?.groupName || '').toLowerCase().trim();
-                       const gStyle = (groupInput?.styleNo || '').toLowerCase().trim();
+                       if (!p) return false;
+                       const gName = String(groupInput?.groupName || '').toLowerCase().trim();
+                       const gStyle = String(groupInput?.styleNo || '').toLowerCase().trim();
                        if (!gName && !gStyle) return true;
-                       const pName = String(p?.name || '').toLowerCase();
-                       const pStyle = String(p?.style_no || '').toLowerCase();
+                       const pName = String(p.name || '').toLowerCase();
+                       const pStyle = String(p.style_no || '').toLowerCase();
                        return (gName && (pName.includes(gName) || pStyle.includes(gName))) || (gStyle && (pStyle.includes(gStyle) || pName.includes(gStyle)));
                      }).map(p => ({ label: `[${p?.code || ''}] ${p?.style_no || ''} - ${p?.name || ''}`, value: p?.code, data: p }))} 
                      value={(groupInput?.children || []).map(c => ({ label: c?.name || '', value: c?.code || '', data: c }))} 
@@ -894,6 +913,10 @@ function App() {
                     const isE = editingCode === item.code && !isGhost;
                     const isChild = item.isMappedChild;
                     const trBg = selectedCodes.includes(item.code) ? '#fff9db' : (isE ? '#e3f2fd' : (isChild ? '#f8fbfc' : '#fff'));
+                    
+                    const typeStr = String(item.type || '');
+                    const isGroupType = typeStr.includes('묶음') || typeStr.includes('세트');
+
                     const prevN = Number(item.prev_naver || item.price_naver || 0);
                     const prevS = Number(item.prev_sale || item.price_sale || 0);
                     const curS = isE ? Number(editRow.price_sale || 0) : Number(item.price_sale || 0);
@@ -906,8 +929,8 @@ function App() {
                         <td style={{ ...tdStyle, ...fX(cols.brd.l), ...cellS(cols.brd), background: trBg }}>{isGhost ? <span style={{color:GHOST_COLOR}}>{item.brand}</span> : (isE ? <select value={editRow.brand||''} onChange={e=>setEditRow({...editRow, brand:e.target.value})} style={{fontSize:'10px', padding:'0', width:'100%'}}><option value="">-</option>{brands.map(b=><option key={b} value={b}>{b}</option>)}</select> : item.brand)}</td>
                         <td style={{ ...tdStyle, ...fX(cols.sea.l), ...cellS(cols.sea), background: trBg }}>{isGhost ? <span style={{color:GHOST_COLOR}}>{item.season}</span> : (isE ? <select value={editRow.season||''} onChange={e=>setEditRow({...editRow, season:e.target.value})} style={{fontSize:'10px', padding:'0', width:'100%'}}><option value="">-</option>{seasons.map(s=><option key={s} value={s}>{s}</option>)}</select> : item.season)}</td>
                         
-                        <td style={{ ...tdStyle, ...fX(cols.typ.l), ...cellS(cols.typ), background: trBg, color: isGhost ? GHOST_COLOR : (item.type.includes('묶음')||item.type.includes('세트')?'#6c5ce7':(isChild?'#b2bec3':'#999')), fontWeight: (item.type.includes('묶음')||item.type.includes('세트'))?'bold':'normal' }}>
-                          {(item.type.includes('묶음') || item.type.includes('세트')) && (
+                        <td style={{ ...tdStyle, ...fX(cols.typ.l), ...cellS(cols.typ), background: trBg, color: isGhost ? GHOST_COLOR : (isGroupType?'#6c5ce7':(isChild?'#b2bec3':'#999')), fontWeight: isGroupType?'bold':'normal' }}>
+                          {isGroupType && (
                             <span onClick={() => toggleGroup(item.code)} style={{cursor:'pointer', marginRight:'4px', display:'inline-block', width:'12px', color:'#6c5ce7'}}>
                               {collapsedGroups.includes(item.code) ? '▶' : '▼'}
                             </span>
@@ -1009,6 +1032,9 @@ function App() {
                     const trBg = selectedCodes.includes(item.code) ? '#fff9db' : (isE ? '#e3f2fd' : (isChild ? '#f8fbfc' : '#fff'));
                     const txtColor = isGhost ? '#95a5a6' : 'inherit'; 
                     
+                    const typeStr = String(item.type || '');
+                    const isGroupType = typeStr.includes('묶음') || typeStr.includes('세트');
+                    
                     return (
                       <tr key={`inv-${item.code}-${idx}`} style={{ background: trBg, color: txtColor }}>
                         <td style={{ ...tdStyle, ...fX(cols.chk.l), ...cellS(cols.chk), background: trBg }}>
@@ -1020,8 +1046,8 @@ function App() {
                         <td style={{ ...tdStyle, ...fX(cols.brd.l), ...cellS(cols.brd), background: trBg }}>{item.brand}</td>
                         <td style={{ ...tdStyle, ...fX(cols.sea.l), ...cellS(cols.sea), background: trBg }}>{item.season}</td>
                         
-                        <td style={{ ...tdStyle, ...fX(cols.typ.l), ...cellS(cols.typ), background: trBg, fontWeight: (item.type.includes('묶음')||item.type.includes('세트'))?'bold':'normal' }}>
-                          {(item.type.includes('묶음') || item.type.includes('세트')) && (
+                        <td style={{ ...tdStyle, ...fX(cols.typ.l), ...cellS(cols.typ), background: trBg, fontWeight: isGroupType?'bold':'normal' }}>
+                          {isGroupType && (
                             <span onClick={() => toggleGroup(item.code)} style={{cursor:'pointer', marginRight:'4px', display:'inline-block', width:'12px', color:'#6c5ce7'}}>
                               {collapsedGroups.includes(item.code) ? '▶' : '▼'}
                             </span>
@@ -1036,11 +1062,10 @@ function App() {
                           {item.name} {isGhost && <span style={{fontSize:'10px', color:'#e74c3c'}}>(중복)</span>}
                         </td>
                         
-                        {/* 💡 1, 2, 3주 발주 UI 증발 버그 완벽 수정 (item.order_w1을 정확히 참조) */}
                         <td style={{...tdStyle, background: isE ? '#fff' : 'inherit'}}>{isE ? <input type="number" value={editRow.order_w1||0} onChange={e=>setEditRow({...editRow, order_w1:e.target.value})} style={{width:'50px', fontSize:'10px', textAlign:'center'}}/> : (item.order_w1 || 0).toLocaleString()}</td>
                         <td style={{...tdStyle, background: isE ? '#fff' : 'inherit'}}>{isE ? <input type="number" value={editRow.order_w2||0} onChange={e=>setEditRow({...editRow, order_w2:e.target.value})} style={{width:'50px', fontSize:'10px', textAlign:'center'}}/> : (item.order_w2 || 0).toLocaleString()}</td>
                         <td style={{...tdStyle, background: isE ? '#fff' : 'inherit'}}>{isE ? <input type="number" value={editRow.order_w3||0} onChange={e=>setEditRow({...editRow, order_w3:e.target.value})} style={{width:'50px', fontSize:'10px', textAlign:'center'}}/> : (item.order_w3 || 0).toLocaleString()}</td>
-                        <td style={{...tdStyle, color:'#2980b9', fontWeight:'bold'}}>{item.totalOrder?.toLocaleString()}</td>
+                        <td style={{...tdStyle, color:'#2980b9', fontWeight:'bold'}}>{(item.totalOrder || 0).toLocaleString()}</td>
                         <td style={{...tdStyle, color:'#27ae60', fontWeight:'bold', background: isE ? '#fff' : 'inherit'}}>{isE ? <input type="number" value={editRow.stock||0} onChange={e=>setEditRow({...editRow, stock:e.target.value})} style={{width:'50px', fontSize:'10px', textAlign:'center'}}/> : (item.stock || 0).toLocaleString()}</td>
                         <td style={{...tdStyle, background: isE ? '#fff' : 'inherit'}}>{isE ? <input type="number" value={editRow.hqStock||0} onChange={e=>setEditRow({...editRow, hqStock:e.target.value})} style={{width:'50px', fontSize:'10px', textAlign:'center'}}/> : (item.hq_stock || 0).toLocaleString()}</td>
                       </tr>
