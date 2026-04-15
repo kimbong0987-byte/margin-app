@@ -156,6 +156,8 @@ function App() {
            calcItem.hq_stock = sumHqStock; 
        }
        
+       calcItem.totalOrder = calcItem.order_w1 + calcItem.order_w2 + calcItem.order_w3; 
+       
        const cost = Number(calcItem.cost || 0);
        const sale = Number(calcItem.price_sale || 0);
        calcItem.margin = (sale - Math.floor(sale * 0.18)) - cost - 5000;
@@ -358,7 +360,6 @@ function App() {
     reader.readAsBinaryString(selectedFile);
   };
 
-  // 💡 엑셀 다운로드 (항목 순서 변경 및 마진 추가, 총 발주합계 삭제)
   const downloadListExcel = () => {
     let src = activeMenu === 'inventory' ? processedData : processedData.filter(i => !i.isGhost);
     if (selectedCodes.length) src = src.filter(i => selectedCodes.includes(i.code));
@@ -386,21 +387,60 @@ function App() {
     XLSX.writeFile(wb, "MD_라인시트_데이터.xlsx");
   };
 
+  // 💡 [핵심 수정] 다운받은 엑셀 파일의 "모든 항목"을 100% 읽어들여서 수퍼베이스로 덮어쓰기 합니다.
   const handleListExcelUpload = async (e) => {
     const file = e.target.files[0]; 
     if(!file) return;
     const reader = new FileReader();
     reader.onload = async (ev) => {
-      const rows = XLSX.utils.sheet_to_json(XLSX.read(ev.target.result, {type:'binary'}).Sheets[XLSX.read(ev.target.result, {type:'binary'}).SheetNames[0]]);
-      for(const r of rows) {
-        const c = String(r["품번"]);
-        const tbl = groups.some(g=>g.code===c) ? 'groups' : 'master_products';
-        await supabase.from(tbl).update({ cost: Number(r["원가"]||0), price_sale: Number(r["행사가"]||0) }).eq('code', c);
+      try {
+        const rows = XLSX.utils.sheet_to_json(XLSX.read(ev.target.result, {type:'binary'}).Sheets[XLSX.read(ev.target.result, {type:'binary'}).SheetNames[0]], { defval: "" });
+        
+        const updatePromises = [];
+
+        for(const r of rows) {
+          const c = String(r["품번"] || "").trim();
+          if (!c) continue;
+
+          const tbl = groups.some(g=>g.code===c) ? 'groups' : 'master_products';
+          const payload = {};
+
+          // 엑셀에 있는 데이터만 찾아서 동적(Dynamic)으로 업데이트 항목을 구성합니다.
+          if ("브랜드" in r) payload.brand = String(r["브랜드"]);
+          if ("시즌" in r) payload.season = String(r["시즌"]);
+          if ("복종" in r) payload.category = String(r["복종"]);
+          if ("스타일코드" in r) payload.style_no = String(r["스타일코드"]);
+          if ("상품명" in r) payload.name = String(r["상품명"]);
+          
+          if ("원가" in r) payload.cost = Number(String(r["원가"]).replace(/,/g, '') || 0);
+          if ("Tag가" in r) payload.tag_price = Number(String(r["Tag가"]).replace(/,/g, '') || 0);
+          if ("네이버(변경)" in r) payload.price_naver = Number(String(r["네이버(변경)"]).replace(/,/g, '') || 0);
+          if ("쿠팡(변경)" in r) payload.price_coupang = Number(String(r["쿠팡(변경)"]).replace(/,/g, '') || 0);
+          if ("로켓(변경)" in r) payload.price_rocket = Number(String(r["로켓(변경)"]).replace(/,/g, '') || 0);
+          if ("골드(변경)" in r) payload.price_gold = Number(String(r["골드(변경)"]).replace(/,/g, '') || 0);
+          if ("행사가(변경)" in r) payload.price_sale = Number(String(r["행사가(변경)"]).replace(/,/g, '') || 0);
+          
+          if ("온라인재고" in r) payload.stock = Number(String(r["온라인재고"]).replace(/,/g, '') || 0);
+          if ("본사재고" in r) payload.hq_stock = Number(String(r["본사재고"]).replace(/,/g, '') || 0);
+          if ("1주발주" in r) payload.order_w1 = Number(String(r["1주발주"]).replace(/,/g, '') || 0);
+          if ("2주발주" in r) payload.order_w2 = Number(String(r["2주발주"]).replace(/,/g, '') || 0);
+          if ("3주발주" in r) payload.order_w3 = Number(String(r["3주발주"]).replace(/,/g, '') || 0);
+
+          if (Object.keys(payload).length > 0) {
+            updatePromises.push(supabase.from(tbl).update(payload).eq('code', c));
+          }
+        }
+        
+        await Promise.all(updatePromises);
+        alert("✅ 엑셀 일괄 수정 업로드 완료!\n(다운로드 하셨던 엑셀의 모든 변경사항이 완벽하게 반영되었습니다.)"); 
+        fetchData();
+      } catch (err) {
+        console.error(err);
+        alert("❌ 엑셀 처리 중 오류가 발생했습니다.");
       }
-      alert("✅ 변경 업로드 완료"); 
-      fetchData();
     };
-    reader.readAsBinaryString(file); e.target.value = null;
+    reader.readAsBinaryString(file); 
+    e.target.value = null;
   };
 
   const handleInventoryExcelUpload = async (e) => {
@@ -927,10 +967,6 @@ function App() {
                     const isE = editingCode === item.code && !isGhost;
                     const isChild = item.isMappedChild;
                     const trBg = selectedCodes.includes(item.code) ? '#fff9db' : (isE ? '#e3f2fd' : (isChild ? '#f8fbfc' : '#fff'));
-                    
-                    const typeStr = String(item.type || '');
-                    const isGroupType = typeStr.includes('묶음') || typeStr.includes('세트');
-
                     const prevN = Number(item.prev_naver || item.price_naver || 0);
                     const prevS = Number(item.prev_sale || item.price_sale || 0);
                     const curS = isE ? Number(editRow.price_sale || 0) : Number(item.price_sale || 0);
@@ -943,8 +979,8 @@ function App() {
                         <td style={{ ...tdStyle, ...fX(cols.brd.l), ...cellS(cols.brd), background: trBg }}>{isGhost ? <span style={{color:GHOST_COLOR}}>{item.brand}</span> : (isE ? <select value={editRow.brand||''} onChange={e=>setEditRow({...editRow, brand:e.target.value})} style={{fontSize:'10px', padding:'0', width:'100%'}}><option value="">-</option>{brands.map(b=><option key={b} value={b}>{b}</option>)}</select> : item.brand)}</td>
                         <td style={{ ...tdStyle, ...fX(cols.sea.l), ...cellS(cols.sea), background: trBg }}>{isGhost ? <span style={{color:GHOST_COLOR}}>{item.season}</span> : (isE ? <select value={editRow.season||''} onChange={e=>setEditRow({...editRow, season:e.target.value})} style={{fontSize:'10px', padding:'0', width:'100%'}}><option value="">-</option>{seasons.map(s=><option key={s} value={s}>{s}</option>)}</select> : item.season)}</td>
                         
-                        <td style={{ ...tdStyle, ...fX(cols.typ.l), ...cellS(cols.typ), background: trBg, color: isGhost ? GHOST_COLOR : (isGroupType?'#6c5ce7':(isChild?'#b2bec3':'#999')), fontWeight: isGroupType?'bold':'normal' }}>
-                          {isGroupType && (
+                        <td style={{ ...tdStyle, ...fX(cols.typ.l), ...cellS(cols.typ), background: trBg, color: isGhost ? GHOST_COLOR : (item.type.includes('묶음')||item.type.includes('세트')?'#6c5ce7':(isChild?'#b2bec3':'#999')), fontWeight: (item.type.includes('묶음')||item.type.includes('세트'))?'bold':'normal' }}>
+                          {(item.type.includes('묶음') || item.type.includes('세트')) && (
                             <span onClick={() => toggleGroup(item.code)} style={{cursor:'pointer', marginRight:'4px', display:'inline-block', width:'12px', color:'#6c5ce7'}}>
                               {collapsedGroups.includes(item.code) ? '▶' : '▼'}
                             </span>
