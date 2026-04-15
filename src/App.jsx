@@ -3,7 +3,7 @@ import * as XLSX from 'xlsx';
 import Select from 'react-select';
 import { supabase } from './supabaseClient'; 
 
-// 💡 텍스트 비교 시 띄어쓰기(공백)만 안전하게 제거하는 함수 (한글 지워짐 버그 완벽 수정)
+// 💡 텍스트 비교 시 띄어쓰기(공백)만 안전하게 제거하는 함수
 const cleanStr = (s) => String(s || "").replace(/\s+/g, '').toUpperCase();
 
 function App() {
@@ -75,7 +75,7 @@ function App() {
   };
 
   // ==========================================
-  // 3. 유틸리티 및 데이터 가공 (피벗 롤업)
+  // 3. 유틸리티 및 데이터 가공 (피벗 롤업 최적화)
   // ==========================================
   const handleSort = (key) => {
     let direction = 'asc';
@@ -106,7 +106,16 @@ function App() {
       const matchCat = filterCategory === '전체' || item.category === filterCategory;
       const matchBrand = filterBrand === '전체' || item.brand === filterBrand;
       const matchSeason = filterSeason === '전체' || item.season === filterSeason;
-      const matchSearch = term === '' || (String(item.code || "") + String(item.style_no || "") + String(item.name || "")).toLowerCase().includes(term);
+      
+      // 💡 검색 기능 업그레이드: 그룹일 경우 하위 자식들의 이름과 코드도 검색어에 포함!
+      let searchString = String(item.code || "") + String(item.style_no || "") + String(item.name || "");
+      if (item.children && Array.isArray(item.children)) {
+          item.children.forEach(c => {
+              searchString += String(c.code || "") + String(c.name || "");
+          });
+      }
+      const matchSearch = term === '' || searchString.toLowerCase().includes(term);
+      
       return matchCat && matchBrand && matchSeason && matchSearch;
     };
 
@@ -155,8 +164,6 @@ function App() {
            calcItem.stock = sumStock;       
            calcItem.hq_stock = sumHqStock; 
        }
-       
-       calcItem.totalOrder = calcItem.order_w1 + calcItem.order_w2 + calcItem.order_w3; 
        
        const cost = Number(calcItem.cost || 0);
        const sale = Number(calcItem.price_sale || 0);
@@ -252,7 +259,7 @@ function App() {
   };
 
   // ==========================================
-  // 4. 데이터 처리
+  // 4. 데이터 저장 처리 (★ 거짓 알림 방지 및 경량화 완벽 패치)
   // ==========================================
   const addCategory = async () => { if(!newCatInput.trim()) return; await supabase.from('categories').insert([{name: newCatInput}]); setNewCatInput(''); fetchData(); };
   const deleteCategory = async (n) => { if(window.confirm(`[${n}] 삭제하시겠습니까?`)) { await supabase.from('categories').delete().eq('name',n); fetchData(); } };
@@ -261,23 +268,48 @@ function App() {
   const addSeason = async () => { if(!newSeasonInput.trim()) return; await supabase.from('seasons').insert([{name: newSeasonInput}]); setNewSeasonInput(''); fetchData(); };
   const deleteSeason = async (n) => { if(window.confirm(`[${n}] 삭제하시겠습니까?`)) { await supabase.from('seasons').delete().eq('name',n); fetchData(); } };
 
+  // 💡 단품 저장 에러 캐치 추가
   const handleRegisterMaster = async () => {
-    await supabase.from('master_products').upsert([{ 
+    if (!tempChild.품번코드) return alert("❌ 품번코드(필수)를 입력해주세요.");
+
+    const { error } = await supabase.from('master_products').upsert([{ 
       brand: tempChild.brand, season: tempChild.season, category: tempChild.category, 
       code: tempChild.품번코드, style_no: tempChild.스타일넘버, name: tempChild.상품명, 
       cost: Number(tempChild.원가 || 0), tag_price: Number(tempChild.tag가 || 0) 
     }], { onConflict: 'code' });
+    
+    if (error) {
+      console.error("DB 저장 에러:", error);
+      return alert(`❌ 단품 저장 실패!\n상세원인: ${error.message}`);
+    }
+
     alert("✅ 저장 완료"); 
     setTempChild({ brand: '', season: '', category: '', 품번코드: '', 스타일넘버: '', 상품명: '', 원가: '', tag가: '' }); 
     fetchData();
   };
 
+  // 💡 그룹 저장 에러 캐치 및 Payload 초경량화 적용!
   const handleSaveGroup = async () => {
-    await supabase.from('groups').upsert([{ 
+    if (!groupInput.groupCode) return alert("❌ 그룹 관리용 품번을 입력해주세요.");
+
+    // 🚨 핵심 해결책: 하위 단품 8개를 넣을 때 용량 초과가 나지 않도록, '품번'과 '이름'만 압축해서 저장합니다!
+    const safeChildren = Array.isArray(groupInput.children) 
+      ? groupInput.children.map(c => ({ code: c.code, name: c.name })) 
+      : [];
+
+    const { error } = await supabase.from('groups').upsert([{ 
       brand: groupInput.brand, season: groupInput.season, type: groupInput.type, category: groupInput.category, 
       code: groupInput.groupCode, style_no: groupInput.styleNo, name: groupInput.groupName, 
-      cost: Number(groupInput.cost || 0), tag_price: Number(groupInput.tagPrice || 0), children: groupInput.children 
+      cost: Number(groupInput.cost || 0), tag_price: Number(groupInput.tagPrice || 0), 
+      children: safeChildren 
     }], { onConflict: 'code' });
+    
+    // 저장이 실패하면 거짓말로 성공이라 하지 않고 정확한 이유를 보여줍니다.
+    if (error) {
+      console.error("그룹 저장 에러:", error);
+      return alert(`❌ 그룹 저장 실패!\n원인: ${error.message}\n(데이터베이스 형식을 확인해주세요.)`);
+    }
+
     alert("✅ 그룹 저장(덮어쓰기) 완료"); 
     setGroupInput({ brand: '', season: '', type: '묶음', category: '', groupCode: '', styleNo: '', groupName: '', cost: '', tagPrice: '', children: [] }); 
     fetchData();
@@ -387,7 +419,6 @@ function App() {
     XLSX.writeFile(wb, "MD_라인시트_데이터.xlsx");
   };
 
-  // 💡 [핵심 수정] 다운받은 엑셀 파일의 "모든 항목"을 100% 읽어들여서 수퍼베이스로 덮어쓰기 합니다.
   const handleListExcelUpload = async (e) => {
     const file = e.target.files[0]; 
     if(!file) return;
@@ -405,7 +436,6 @@ function App() {
           const tbl = groups.some(g=>g.code===c) ? 'groups' : 'master_products';
           const payload = {};
 
-          // 엑셀에 있는 데이터만 찾아서 동적(Dynamic)으로 업데이트 항목을 구성합니다.
           if ("브랜드" in r) payload.brand = String(r["브랜드"]);
           if ("시즌" in r) payload.season = String(r["시즌"]);
           if ("복종" in r) payload.category = String(r["복종"]);
@@ -1022,8 +1052,6 @@ function App() {
                 <button onClick={handleExpandAll} style={{padding:'6px 10px', background:'#34495e', color:'#fff', border:'none', borderRadius:'4px', fontSize:'11px', cursor:'pointer', fontWeight:'bold'}}>▼ 전체열기</button>
                 <button onClick={handleCollapseAll} style={{padding:'6px 10px', background:'#7f8c8d', color:'#fff', border:'none', borderRadius:'4px', fontSize:'11px', cursor:'pointer', fontWeight:'bold'}}>▶ 전체닫기</button>
                 <div style={{width:'1px', background:'#ddd', margin:'0 2px'}}></div>
-                {/* 💡 3번 재고발주 메뉴에도 엑셀 다운로드 버튼 추가 완료 */}
-                <button onClick={downloadListExcel} style={{padding:'6px 10px', background:'#27ae60', color:'#fff', border:'none', borderRadius:'4px', fontSize:'11px', cursor:'pointer', fontWeight:'bold'}}>📄 {selectedCodes.length > 0 ? "선택 엑셀" : "전체 엑셀"}</button>
                 <label style={{fontSize:'11px', display:'flex', alignItems:'center', gap:'5px', cursor:'pointer', background:'#e8f8f5', padding:'6px 12px', borderRadius:'6px', border:'1px solid #1abc9c', color:'#16a085', fontWeight:'bold'}}>
                   📦 온라인재고 (사전생성)
                   <input type="file" onChange={handleInventoryExcelUpload} style={{display:'none'}} />
@@ -1071,6 +1099,7 @@ function App() {
                     <th style={{...thStyle, width:'70px'}} onClick={() => handleSort('order_w1')}>1주발주</th>
                     <th style={{...thStyle, width:'70px'}} onClick={() => handleSort('order_w2')}>2주발주</th>
                     <th style={{...thStyle, width:'70px'}} onClick={() => handleSort('order_w3')}>3주발주</th>
+                    <th style={{...thStyle, width:'80px', color:'#2980b9'}} onClick={() => handleSort('totalOrder')}>총 발주합계</th>
                     <th style={{...thStyle, width:'80px', color:'#27ae60'}} onClick={() => handleSort('stock')}>온라인재고</th>
                     <th style={{...thStyle, width:'80px'}} onClick={() => handleSort('hq_stock')}>본사재고</th>
                   </tr>
@@ -1116,6 +1145,7 @@ function App() {
                         <td style={{...tdStyle, background: isE ? '#fff' : 'inherit'}}>{isE ? <input type="number" value={editRow.order_w1||0} onChange={e=>setEditRow({...editRow, order_w1:e.target.value})} style={{width:'50px', fontSize:'10px', textAlign:'center'}}/> : (item.order_w1 || 0).toLocaleString()}</td>
                         <td style={{...tdStyle, background: isE ? '#fff' : 'inherit'}}>{isE ? <input type="number" value={editRow.order_w2||0} onChange={e=>setEditRow({...editRow, order_w2:e.target.value})} style={{width:'50px', fontSize:'10px', textAlign:'center'}}/> : (item.order_w2 || 0).toLocaleString()}</td>
                         <td style={{...tdStyle, background: isE ? '#fff' : 'inherit'}}>{isE ? <input type="number" value={editRow.order_w3||0} onChange={e=>setEditRow({...editRow, order_w3:e.target.value})} style={{width:'50px', fontSize:'10px', textAlign:'center'}}/> : (item.order_w3 || 0).toLocaleString()}</td>
+                        <td style={{...tdStyle, color:'#2980b9', fontWeight:'bold'}}>{(item.totalOrder || 0).toLocaleString()}</td>
                         <td style={{...tdStyle, color:'#27ae60', fontWeight:'bold', background: isE ? '#fff' : 'inherit'}}>{isE ? <input type="number" value={editRow.stock||0} onChange={e=>setEditRow({...editRow, stock:e.target.value})} style={{width:'50px', fontSize:'10px', textAlign:'center'}}/> : (item.stock || 0).toLocaleString()}</td>
                         <td style={{...tdStyle, background: isE ? '#fff' : 'inherit'}}>{isE ? <input type="number" value={editRow.hq_stock||0} onChange={e=>setEditRow({...editRow, hq_stock:e.target.value})} style={{width:'50px', fontSize:'10px', textAlign:'center'}}/> : (item.hq_stock || 0).toLocaleString()}</td>
                       </tr>
