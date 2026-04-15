@@ -106,7 +106,16 @@ function App() {
       const matchCat = filterCategory === '전체' || item.category === filterCategory;
       const matchBrand = filterBrand === '전체' || item.brand === filterBrand;
       const matchSeason = filterSeason === '전체' || item.season === filterSeason;
-      const matchSearch = term === '' || (String(item.code || "") + String(item.style_no || "") + String(item.name || "")).toLowerCase().includes(term);
+      
+      // 검색 시 그룹의 하위 구성품 이름도 검색 가능하도록 개선
+      let searchString = String(item.code || "") + String(item.style_no || "") + String(item.name || "");
+      if (item.children && Array.isArray(item.children)) {
+          item.children.forEach(c => {
+              searchString += String(c.code || "") + String(c.name || "");
+          });
+      }
+      const matchSearch = term === '' || searchString.toLowerCase().includes(term);
+
       return matchCat && matchBrand && matchSeason && matchSearch;
     };
 
@@ -135,7 +144,8 @@ function App() {
        calcItem.stock = Number(calcItem.stock || 0);
        calcItem.hq_stock = Number(calcItem.hq_stock || 0);
 
-       if ((calcItem.type === '묶음' || calcItem.type === '세트') && calcItem.children && calcItem.children.length > 0) {
+       const typeStr = String(calcItem.type || '');
+       if ((typeStr.includes('묶음') || typeStr.includes('세트')) && calcItem.children && calcItem.children.length > 0) {
            let sumW1 = 0, sumW2 = 0, sumW3 = 0, sumStock = 0, sumHqStock = 0;
            calcItem.children.forEach(childSnapshot => {
                const liveChild = masterMap.get(childSnapshot.code);
@@ -155,9 +165,6 @@ function App() {
            calcItem.hq_stock = sumHqStock; 
        }
        
-       // 💡 총 발주합계 완벽 고정
-       calcItem.totalOrder = calcItem.order_w1 + calcItem.order_w2 + calcItem.order_w3; 
-       
        const cost = Number(calcItem.cost || 0);
        const sale = Number(calcItem.price_sale || 0);
        calcItem.margin = (sale - Math.floor(sale * 0.18)) - cost - 5000;
@@ -167,7 +174,7 @@ function App() {
 
     topLevel.sort((a, b) => {
       let vA = a[sortConfig.key]; let vB = b[sortConfig.key];
-      if (['cost', 'tag_price', 'price_sale', 'margin', 'stock', 'hq_stock', 'order_w1', 'order_w2', 'order_w3', 'totalOrder'].includes(sortConfig.key)) { 
+      if (['cost', 'tag_price', 'price_sale', 'margin', 'stock', 'hq_stock', 'order_w1', 'order_w2', 'order_w3'].includes(sortConfig.key)) { 
         vA = Number(vA || 0); vB = Number(vB || 0); 
       } else { 
         vA = String(vA || "").toLowerCase(); vB = String(vB || "").toLowerCase(); 
@@ -182,7 +189,9 @@ function App() {
 
     topLevel.forEach(item => {
       expandedResult.push(item);
-      if ((item.type === '묶음' || item.type === '세트') && item.children) {
+      
+      const typeStr = String(item.type || '');
+      if ((typeStr.includes('묶음') || typeStr.includes('세트')) && item.children) {
         item.children.forEach(childSnapshot => {
           const liveChild = masterMap.get(childSnapshot.code);
           if (!liveChild) return; 
@@ -206,8 +215,7 @@ function App() {
             order_w2: w2,
             order_w3: w3,
             stock: Number(liveChild.stock || 0),
-            hq_stock: Number(liveChild.hq_stock || 0),
-            totalOrder: w1 + w2 + w3
+            hq_stock: Number(liveChild.hq_stock || 0)
           });
 
           if (!isGhost) {
@@ -251,7 +259,7 @@ function App() {
   };
 
   // ==========================================
-  // 4. 데이터 처리
+  // 4. 데이터 저장 처리 (★ 거짓 알림 방지 및 경량화 완벽 패치)
   // ==========================================
   const addCategory = async () => { if(!newCatInput.trim()) return; await supabase.from('categories').insert([{name: newCatInput}]); setNewCatInput(''); fetchData(); };
   const deleteCategory = async (n) => { if(window.confirm(`[${n}] 삭제하시겠습니까?`)) { await supabase.from('categories').delete().eq('name',n); fetchData(); } };
@@ -260,30 +268,55 @@ function App() {
   const addSeason = async () => { if(!newSeasonInput.trim()) return; await supabase.from('seasons').insert([{name: newSeasonInput}]); setNewSeasonInput(''); fetchData(); };
   const deleteSeason = async (n) => { if(window.confirm(`[${n}] 삭제하시겠습니까?`)) { await supabase.from('seasons').delete().eq('name',n); fetchData(); } };
 
+  // 💡 단품 저장 시 에러 캐치 추가
   const handleRegisterMaster = async () => {
-    await supabase.from('master_products').upsert([{ 
+    if (!tempChild.품번코드) return alert("❌ 품번코드(필수)를 입력해주세요.");
+
+    const { error } = await supabase.from('master_products').upsert([{ 
       brand: tempChild.brand, season: tempChild.season, category: tempChild.category, 
       code: tempChild.품번코드, style_no: tempChild.스타일넘버, name: tempChild.상품명, 
       cost: Number(tempChild.원가 || 0), tag_price: Number(tempChild.tag가 || 0) 
     }], { onConflict: 'code' });
+    
+    if (error) {
+      console.error("DB 저장 에러:", error);
+      return alert(`❌ 단품 저장 실패!\n상세원인: ${error.message}`);
+    }
+
     alert("✅ 저장 완료"); 
     setTempChild({ brand: '', season: '', category: '', 품번코드: '', 스타일넘버: '', 상품명: '', 원가: '', tag가: '' }); 
     fetchData();
   };
 
+  // 💡 그룹 저장 시 Payload 초경량화 적용 및 에러 알림!
   const handleSaveGroup = async () => {
-    await supabase.from('groups').upsert([{ 
+    if (!groupInput.groupCode) return alert("❌ 그룹 관리용 품번을 입력해주세요.");
+
+    // 하위 단품의 필수 정보(code, name)만 가볍게 추출 (DB 용량 초과 방지)
+    const safeChildren = Array.isArray(groupInput.children) 
+      ? groupInput.children.map(c => ({ code: c.code, name: c.name })) 
+      : [];
+
+    const { error } = await supabase.from('groups').upsert([{ 
       brand: groupInput.brand, season: groupInput.season, type: groupInput.type, category: groupInput.category, 
       code: groupInput.groupCode, style_no: groupInput.styleNo, name: groupInput.groupName, 
-      cost: Number(groupInput.cost || 0), tag_price: Number(groupInput.tagPrice || 0), children: groupInput.children 
+      cost: Number(groupInput.cost || 0), tag_price: Number(groupInput.tagPrice || 0), 
+      children: safeChildren 
     }], { onConflict: 'code' });
+    
+    if (error) {
+      console.error("그룹 저장 에러:", error);
+      return alert(`❌ 그룹 저장 실패!\n원인: ${error.message}`);
+    }
+
     alert("✅ 그룹 저장(덮어쓰기) 완료"); 
     setGroupInput({ brand: '', season: '', type: '묶음', category: '', groupCode: '', styleNo: '', groupName: '', cost: '', tagPrice: '', children: [] }); 
     fetchData();
   };
 
   const saveEdit = async (item) => {
-    const tbl = (item.type.includes('단품') || item.type.includes('구성')) ? 'master_products' : 'groups';
+    const typeStr = String(item.type || '');
+    const tbl = (typeStr.includes('단품') || typeStr.includes('구성')) ? 'master_products' : 'groups';
     await supabase.from(tbl).update({
       brand: editRow.brand, season: editRow.season, category: editRow.category, style_no: editRow.style_no, name: editRow.name, 
       cost: Number(editRow.cost), tag_price: Number(editRow.tag_price), price_naver: Number(editRow.price_naver || 0), 
@@ -358,6 +391,7 @@ function App() {
     reader.readAsBinaryString(selectedFile);
   };
 
+  // 💡 엑셀 다운로드 (항목 순서 변경 및 마진 추가, 총 발주합계 삭제)
   const downloadListExcel = () => {
     let src = activeMenu === 'inventory' ? processedData : processedData.filter(i => !i.isGhost);
     if (selectedCodes.length) src = src.filter(i => selectedCodes.includes(i.code));
@@ -385,7 +419,6 @@ function App() {
     XLSX.writeFile(wb, "MD_라인시트_데이터.xlsx");
   };
 
-  // 💡 [핵심 업데이트] 다운받은 엑셀의 "모든 항목"을 100% 읽어들여 덮어쓰기 합니다!
   const handleListExcelUpload = async (e) => {
     const file = e.target.files[0]; 
     if(!file) return;
@@ -403,7 +436,6 @@ function App() {
           const tbl = groups.some(g=>g.code===c) ? 'groups' : 'master_products';
           const payload = {};
 
-          // 엑셀에 있는 항목만 쏙쏙 뽑아서 동기화할 준비를 합니다.
           if ("브랜드" in r) payload.brand = String(r["브랜드"]);
           if ("시즌" in r) payload.season = String(r["시즌"]);
           if ("복종" in r) payload.category = String(r["복종"]);
@@ -416,9 +448,7 @@ function App() {
           if ("쿠팡(변경)" in r) payload.price_coupang = Number(String(r["쿠팡(변경)"]).replace(/,/g, '') || 0);
           if ("로켓(변경)" in r) payload.price_rocket = Number(String(r["로켓(변경)"]).replace(/,/g, '') || 0);
           if ("골드(변경)" in r) payload.price_gold = Number(String(r["골드(변경)"]).replace(/,/g, '') || 0);
-          
           if ("행사가(변경)" in r) payload.price_sale = Number(String(r["행사가(변경)"]).replace(/,/g, '') || 0);
-          else if ("행사가" in r) payload.price_sale = Number(String(r["행사가"]).replace(/,/g, '') || 0);
           
           if ("온라인재고" in r) payload.stock = Number(String(r["온라인재고"]).replace(/,/g, '') || 0);
           if ("본사재고" in r) payload.hq_stock = Number(String(r["본사재고"]).replace(/,/g, '') || 0);
@@ -432,7 +462,7 @@ function App() {
         }
         
         await Promise.all(updatePromises);
-        alert("✅ 엑셀 일괄 수정 업로드 완료!\n(다운로드 하셨던 엑셀의 모든 변경사항이 완벽하게 동기화되었습니다.)"); 
+        alert("✅ 엑셀 일괄 수정 업로드 완료!\n(다운로드 하셨던 엑셀의 모든 변경사항이 완벽하게 반영되었습니다.)"); 
         fetchData();
       } catch (err) {
         console.error(err);
@@ -1026,7 +1056,6 @@ function App() {
                 <button onClick={handleExpandAll} style={{padding:'6px 10px', background:'#34495e', color:'#fff', border:'none', borderRadius:'4px', fontSize:'11px', cursor:'pointer', fontWeight:'bold'}}>▼ 전체열기</button>
                 <button onClick={handleCollapseAll} style={{padding:'6px 10px', background:'#7f8c8d', color:'#fff', border:'none', borderRadius:'4px', fontSize:'11px', cursor:'pointer', fontWeight:'bold'}}>▶ 전체닫기</button>
                 <div style={{width:'1px', background:'#ddd', margin:'0 2px'}}></div>
-                {/* 💡 3번 메뉴 엑셀 다운로드 버튼 추가 */}
                 <button onClick={downloadListExcel} style={{padding:'6px 10px', background:'#27ae60', color:'#fff', border:'none', borderRadius:'4px', fontSize:'11px', cursor:'pointer', fontWeight:'bold'}}>📄 {selectedCodes.length > 0 ? "선택 엑셀" : "전체 엑셀"}</button>
                 <label style={{fontSize:'11px', display:'flex', alignItems:'center', gap:'5px', cursor:'pointer', background:'#e8f8f5', padding:'6px 12px', borderRadius:'6px', border:'1px solid #1abc9c', color:'#16a085', fontWeight:'bold'}}>
                   📦 온라인재고 (사전생성)
