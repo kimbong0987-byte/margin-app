@@ -6,6 +6,9 @@ import { supabase } from './supabaseClient';
 // 💡 텍스트 비교 시 띄어쓰기(공백)만 안전하게 제거하는 함수
 const cleanStr = (s) => String(s || "").replace(/\s+/g, '').toUpperCase();
 
+// 💡 브랜도와 품번을 결합하여 고유한 키를 만드는 헬퍼 함수
+const makeKey = (brand, code) => `${brand}|||${code}`;
+
 function App() {
   // ==========================================
   // 1. 상태 관리
@@ -28,12 +31,14 @@ function App() {
   const [filterBrand, setFilterBrand] = useState('전체');   
   const [filterSeason, setFilterSeason] = useState('전체'); 
   const [sortConfig, setSortConfig] = useState({ key: 'code', direction: 'asc' });
-  const [selectedCodes, setSelectedCodes] = useState([]); 
+  const [selectedCodes, setSelectedCodes] = useState([]); // 💡 이제 brand|||code 형태의 문자열이 들어갑니다.
 
   const [batchInput, setBatchInput] = useState({ 
     cost: '', tagPrice: '', priceNaver: '', priceCoupang: '', priceRocket: '', priceGold: '', priceSale: '' 
   });
-  const [editingCode, setEditingCode] = useState(null);
+  
+  // 💡 수정 중인 항목을 브랜드+품번으로 정확히 식별하기 위해 상태 변경
+  const [editingItem, setEditingItem] = useState(null); 
   const [editRow, setEditRow] = useState({});
 
   const [tempChild, setTempChild] = useState({ 
@@ -75,7 +80,7 @@ function App() {
   };
 
   // ==========================================
-  // 3. 유틸리티 및 데이터 가공 (피벗 롤업 최적화)
+  // 3. 유틸리티 및 데이터 가공
   // ==========================================
   const handleSort = (key) => {
     let direction = 'asc';
@@ -89,16 +94,17 @@ function App() {
     return curr > orig ? '#2980b9' : '#e74c3c'; 
   };
 
-  const toggleGroup = (code) => {
-    setCollapsedGroups(prev => prev.includes(code) ? prev.filter(c => c !== code) : [...prev, code]);
+  const toggleGroup = (itemKey) => {
+    setCollapsedGroups(prev => prev.includes(itemKey) ? prev.filter(c => c !== itemKey) : [...prev, itemKey]);
   };
 
   const handleExpandAll = () => setCollapsedGroups([]);
-  const handleCollapseAll = () => setCollapsedGroups(groups.map(g => g.code));
+  const handleCollapseAll = () => setCollapsedGroups(groups.map(g => makeKey(g.brand, g.code)));
 
   const processedData = useMemo(() => {
     const masterMap = new Map();
-    masterProducts.forEach(p => masterMap.set(p.code, p));
+    // 💡 맵의 키를 브랜드+품번으로 변경
+    masterProducts.forEach(p => masterMap.set(makeKey(p.brand, p.code), p));
 
     const term = (searchTerm || '').toLowerCase().trim();
 
@@ -121,16 +127,18 @@ function App() {
     const matchedGroups = groups.filter(isMatch).map(g => ({ ...g, type: g.type || '묶음' }));
     const matchedSingles = masterProducts.filter(isMatch).map(p => ({ ...p, type: '단품' }));
 
-    const matchedMappedCodes = new Set();
+    const matchedMappedCodes = new Set(); // brand|||code
     matchedGroups.forEach(g => {
       if (g.children) {
         g.children.forEach(c => {
-          if (masterMap.has(c.code)) matchedMappedCodes.add(c.code);
+          // 💡 하위 구성품도 소속된 그룹과 동일한 브랜드를 가진다고 가정하고 찾습니다.
+          const childKey = makeKey(g.brand, c.code);
+          if (masterMap.has(childKey)) matchedMappedCodes.add(childKey);
         });
       }
     });
 
-    const standaloneSingles = matchedSingles.filter(s => !matchedMappedCodes.has(s.code));
+    const standaloneSingles = matchedSingles.filter(s => !matchedMappedCodes.has(makeKey(s.brand, s.code)));
     let topLevel = [...matchedGroups, ...standaloneSingles];
 
     topLevel = topLevel.map(item => {
@@ -146,7 +154,7 @@ function App() {
        if ((typeStr.includes('묶음') || typeStr.includes('세트')) && calcItem.children && calcItem.children.length > 0) {
            let sumW1 = 0, sumW2 = 0, sumW3 = 0, sumStock = 0, sumHqStock = 0;
            calcItem.children.forEach(childSnapshot => {
-               const liveChild = masterMap.get(childSnapshot.code);
+               const liveChild = masterMap.get(makeKey(calcItem.brand, childSnapshot.code));
                if (!liveChild) return; 
 
                sumW1 += Number(liveChild.order_w1 || 0);
@@ -183,7 +191,7 @@ function App() {
     });
 
     const expandedResult = [];
-    const renderedChildCodes = new Set();
+    const renderedChildKeys = new Set();
 
     topLevel.forEach(item => {
       expandedResult.push(item);
@@ -191,10 +199,11 @@ function App() {
       const typeStr = String(item.type || '');
       if ((typeStr.includes('묶음') || typeStr.includes('세트')) && item.children) {
         item.children.forEach(childSnapshot => {
-          const liveChild = masterMap.get(childSnapshot.code);
+          const liveChild = masterMap.get(makeKey(item.brand, childSnapshot.code));
           if (!liveChild) return; 
 
-          const isGhost = renderedChildCodes.has(liveChild.code);
+          const childKey = makeKey(liveChild.brand, liveChild.code);
+          const isGhost = renderedChildKeys.has(childKey);
           
           const w1 = Number(liveChild.order_w1 || 0);
           const w2 = Number(liveChild.order_w2 || 0);
@@ -208,6 +217,7 @@ function App() {
             type: 'ㄴ 구성', 
             isMappedChild: true, 
             parentCode: item.code,
+            parentBrand: item.brand,
             isGhost: isGhost,
             order_w1: w1,
             order_w2: w2,
@@ -217,7 +227,7 @@ function App() {
           });
 
           if (!isGhost) {
-            renderedChildCodes.add(liveChild.code);
+            renderedChildKeys.add(childKey);
           }
         });
       }
@@ -241,15 +251,21 @@ function App() {
   }, [masterProducts, groups, filterCategory, filterBrand, filterSeason, searchTerm, sortConfig]);
 
   const visibleData = useMemo(() => {
-    return processedData.filter(item => !(item.isMappedChild && collapsedGroups.includes(item.parentCode)));
+    return processedData.filter(item => {
+       if (item.isMappedChild) {
+           const pKey = makeKey(item.parentBrand, item.parentCode);
+           return !collapsedGroups.includes(pKey);
+       }
+       return true;
+    });
   }, [processedData, collapsedGroups]);
 
   const handleSelectAll = (e) => {
     if (e.target.checked) {
       if (activeMenu === 'inventory') {
-        setSelectedCodes(visibleData.map(item => item.code));
+        setSelectedCodes(visibleData.map(item => makeKey(item.brand, item.code)));
       } else {
-        setSelectedCodes(visibleData.filter(i => !i.isGhost).map(item => item.code));
+        setSelectedCodes(visibleData.filter(i => !i.isGhost).map(item => makeKey(item.brand, item.code)));
       }
     } else {
       setSelectedCodes([]);
@@ -257,7 +273,7 @@ function App() {
   };
 
   // ==========================================
-  // 4. 데이터 저장 처리 (★ 절대 실패하지 않는 저장 방식으로 교체!)
+  // 4. 데이터 저장 처리 (★ 브랜드+품번 복합 검색)
   // ==========================================
   const addCategory = async () => { if(!newCatInput.trim()) return; await supabase.from('categories').insert([{name: newCatInput}]); setNewCatInput(''); fetchData(); };
   const deleteCategory = async (n) => { if(window.confirm(`[${n}] 삭제하시겠습니까?`)) { await supabase.from('categories').delete().eq('name',n); fetchData(); } };
@@ -266,9 +282,10 @@ function App() {
   const addSeason = async () => { if(!newSeasonInput.trim()) return; await supabase.from('seasons').insert([{name: newSeasonInput}]); setNewSeasonInput(''); fetchData(); };
   const deleteSeason = async (n) => { if(window.confirm(`[${n}] 삭제하시겠습니까?`)) { await supabase.from('seasons').delete().eq('name',n); fetchData(); } };
 
-  // 💡 단품 등록 (Select 후 Insert / Update 분기 처리)
+  // 💡 단품 등록 시 "브랜드와 품번"이 모두 일치하는 항목이 있는지 확인
   const handleRegisterMaster = async () => {
     if (!tempChild.품번코드) return alert("❌ 품번코드(필수)를 입력해주세요.");
+    if (!tempChild.brand) return alert("❌ 브랜드를 선택해주세요. (동일 품번 구분용)");
 
     const payload = { 
       brand: tempChild.brand, season: tempChild.season, category: tempChild.category, 
@@ -276,35 +293,31 @@ function App() {
       cost: Number(tempChild.원가 || 0), tag_price: Number(tempChild.tag가 || 0) 
     };
 
-    // 1. 이미 있는 품번인지 확인
-    const { data: exist } = await supabase.from('master_products').select('code').eq('code', tempChild.품번코드);
+    const { data: exist } = await supabase.from('master_products').select('code')
+      .eq('code', tempChild.품번코드).eq('brand', tempChild.brand);
+    
     let error;
-
     if (exist && exist.length > 0) {
-      // 있으면 업데이트
-      const res = await supabase.from('master_products').update(payload).eq('code', tempChild.품번코드);
+      const res = await supabase.from('master_products').update(payload)
+        .eq('code', tempChild.품번코드).eq('brand', tempChild.brand);
       error = res.error;
     } else {
-      // 없으면 새로 생성
       const res = await supabase.from('master_products').insert([payload]);
       error = res.error;
     }
     
-    if (error) {
-      console.error("DB 저장 에러:", error);
-      return alert(`❌ 단품 저장 실패!\n상세원인: ${error.message}`);
-    }
+    if (error) return alert(`❌ 단품 저장 실패!\n상세원인: ${error.message}`);
 
     alert("✅ 저장 완료"); 
     setTempChild({ brand: '', season: '', category: '', 품번코드: '', 스타일넘버: '', 상품명: '', 원가: '', tag가: '' }); 
     fetchData();
   };
 
-  // 💡 그룹 저장 (Select 후 Insert / Update 분기 처리 + 경량화)
+  // 💡 그룹 저장 시 "브랜드와 품번"이 모두 일치하는 항목이 있는지 확인
   const handleSaveGroup = async () => {
     if (!groupInput.groupCode) return alert("❌ 그룹 관리용 품번을 입력해주세요.");
+    if (!groupInput.brand) return alert("❌ 브랜드를 선택해주세요.");
 
-    // 하위 단품 필수 정보만 추출 (용량 에러 방지)
     const safeChildren = Array.isArray(groupInput.children) 
       ? groupInput.children.map(c => ({ code: c.code, name: c.name })) 
       : [];
@@ -316,24 +329,20 @@ function App() {
       children: safeChildren 
     };
 
-    // 1. 이미 있는 그룹인지 확인
-    const { data: exist } = await supabase.from('groups').select('code').eq('code', groupInput.groupCode);
+    const { data: exist } = await supabase.from('groups').select('code')
+      .eq('code', groupInput.groupCode).eq('brand', groupInput.brand);
+    
     let error;
-
     if (exist && exist.length > 0) {
-      // 있으면 업데이트 (덮어쓰기)
-      const res = await supabase.from('groups').update(payload).eq('code', groupInput.groupCode);
+      const res = await supabase.from('groups').update(payload)
+        .eq('code', groupInput.groupCode).eq('brand', groupInput.brand);
       error = res.error;
     } else {
-      // 없으면 새로 생성
       const res = await supabase.from('groups').insert([payload]);
       error = res.error;
     }
     
-    if (error) {
-      console.error("그룹 저장 에러:", error);
-      return alert(`❌ 그룹 저장 실패!\n원인: ${error.message}`);
-    }
+    if (error) return alert(`❌ 그룹 저장 실패!\n원인: ${error.message}`);
 
     alert("✅ 그룹 저장(덮어쓰기) 완료"); 
     setGroupInput({ brand: '', season: '', type: '묶음', category: '', groupCode: '', styleNo: '', groupName: '', cost: '', tagPrice: '', children: [] }); 
@@ -343,6 +352,7 @@ function App() {
   const saveEdit = async (item) => {
     const typeStr = String(item.type || '');
     const tbl = (typeStr.includes('단품') || typeStr.includes('구성')) ? 'master_products' : 'groups';
+    
     await supabase.from(tbl).update({
       brand: editRow.brand, season: editRow.season, category: editRow.category, style_no: editRow.style_no, name: editRow.name, 
       cost: Number(editRow.cost), tag_price: Number(editRow.tag_price), price_naver: Number(editRow.price_naver || 0), 
@@ -354,9 +364,9 @@ function App() {
       order_w2: Number(editRow.order_w2 || 0),
       order_w3: Number(editRow.order_w3 || 0),
       prev_naver: Number(item.price_naver || 0), prev_sale: Number(item.price_sale || 0)
-    }).eq('code', editingCode);
+    }).eq('code', editingItem.code).eq('brand', editingItem.brand); // 💡 수정하는 원본의 브랜드와 코드로 타겟팅!
     
-    setEditingCode(null); 
+    setEditingItem(null); 
     fetchData();
   };
 
@@ -371,10 +381,14 @@ function App() {
     if (batchInput.priceGold) up.price_gold = Number(batchInput.priceGold);
     if (batchInput.priceSale) up.price_sale = Number(batchInput.priceSale);
 
-    await Promise.all([
-      supabase.from('groups').update(up).in('code', selectedCodes),
-      supabase.from('master_products').update(up).in('code', selectedCodes)
-    ]);
+    // 💡 여러 브랜드/코드가 섞여있으므로 개별 업데이트 처리
+    const promises = selectedCodes.map(key => {
+       const [b, c] = key.split('|||');
+       const tbl = groups.some(g => g.code === c && g.brand === b) ? 'groups' : 'master_products';
+       return supabase.from(tbl).update(up).eq('code', c).eq('brand', b);
+    });
+
+    await Promise.all(promises);
     alert("✅ 일괄 변경 완료"); 
     setSelectedCodes([]); 
     fetchData();
@@ -382,12 +396,15 @@ function App() {
 
   const handleBatchDelete = async () => {
     if (!selectedCodes.length || !window.confirm("⚠️ 정말 삭제하시겠습니까?")) return;
-    const gDel = groups.filter(g => selectedCodes.includes(g.code)).map(g => g.code);
-    const mDel = masterProducts.filter(p => selectedCodes.includes(p.code)).map(p => p.code);
     
-    if (gDel.length) await supabase.from('groups').delete().in('code', gDel);
-    if (mDel.length) await supabase.from('master_products').delete().in('code', mDel);
-    
+    // 💡 여러 브랜드/코드가 섞여있으므로 개별 삭제 처리
+    const promises = selectedCodes.map(key => {
+        const [b, c] = key.split('|||');
+        const tbl = groups.some(g => g.code === c && g.brand === b) ? 'groups' : 'master_products';
+        return supabase.from(tbl).delete().eq('code', c).eq('brand', b);
+    });
+
+    await Promise.all(promises);
     alert("✅ 삭제 완료"); 
     setSelectedCodes([]); 
     fetchData();
@@ -404,18 +421,17 @@ function App() {
         const data = XLSX.read(e.target.result, { type: 'binary' });
         const parsedRows = XLSX.utils.sheet_to_json(data.Sheets[data.SheetNames[0]]);
         
-        // 💡 엑셀 대량 업로드 시에도 에러 방어 코드로 처리
         for (const i of parsedRows) {
             const payload = { 
               brand: String(i.브랜드 || ''), season: String(i.시즌 || ''), category: String(i.복종 || '미분류'), 
               code: String(i.품번 || ''), style_no: String(i.스타일 || ''), name: String(i.상품명 || ''), 
               cost: Number(i.원가 || 0), tag_price: Number(i.Tag가 || 0) 
             };
-            if(!payload.code) continue;
+            if(!payload.code || !payload.brand) continue;
 
-            const { data: exist } = await supabase.from('master_products').select('code').eq('code', payload.code);
+            const { data: exist } = await supabase.from('master_products').select('code').eq('code', payload.code).eq('brand', payload.brand);
             if (exist && exist.length > 0) {
-              await supabase.from('master_products').update(payload).eq('code', payload.code);
+              await supabase.from('master_products').update(payload).eq('code', payload.code).eq('brand', payload.brand);
             } else {
               await supabase.from('master_products').insert([payload]);
             }
@@ -429,10 +445,11 @@ function App() {
     reader.readAsBinaryString(selectedFile);
   };
 
-  // 💡 엑셀 다운로드 (마진 추가, 항목 배치 최적화 유지)
   const downloadListExcel = () => {
     let src = activeMenu === 'inventory' ? processedData : processedData.filter(i => !i.isGhost);
-    if (selectedCodes.length) src = src.filter(i => selectedCodes.includes(i.code));
+    if (selectedCodes.length) {
+      src = src.filter(i => selectedCodes.includes(makeKey(i.brand, i.code)));
+    }
     
     const dataToExport = src.map(item => {
       const curS = Number(item.price_sale || 0);
@@ -457,7 +474,6 @@ function App() {
     XLSX.writeFile(wb, "MD_라인시트_데이터.xlsx");
   };
 
-  // 💡 다운받은 엑셀 "전체 항목" 덮어쓰기 유지
   const handleListExcelUpload = async (e) => {
     const file = e.target.files[0]; 
     if(!file) return;
@@ -470,9 +486,10 @@ function App() {
 
         for(const r of rows) {
           const c = String(r["품번"] || "").trim();
-          if (!c) continue;
+          const b = String(r["브랜드"] || "").trim();
+          if (!c || !b) continue;
 
-          const tbl = groups.some(g=>g.code===c) ? 'groups' : 'master_products';
+          const tbl = groups.some(g=>g.code===c && g.brand===b) ? 'groups' : 'master_products';
           const payload = {};
 
           if ("브랜드" in r) payload.brand = String(r["브랜드"]);
@@ -496,7 +513,7 @@ function App() {
           if ("3주발주" in r) payload.order_w3 = Number(String(r["3주발주"]).replace(/,/g, '') || 0);
 
           if (Object.keys(payload).length > 0) {
-            updatePromises.push(supabase.from(tbl).update(payload).eq('code', c));
+            updatePromises.push(supabase.from(tbl).update(payload).eq('code', c).eq('brand', b));
           }
         }
         
@@ -562,18 +579,20 @@ function App() {
           const xValue = Number(String(row[xIdx] || "0").replace(/,/g, '')) || 0; 
 
           if (cValue && cValue !== "상품코드") {
+            // 바코드 사전 구축 시 여러 브랜드에서 동일 코드가 있다면 첫번째 것을 매핑할 가능성이 높습니다.
+            // (일반적으로 재고 엑셀에 브랜드 정보가 없기 때문)
             const targetProduct = allProducts.find(p => cleanStr(p.code) === cValue);
 
             if (targetProduct) {
-              const mainCode = targetProduct.code;
-              stockMap[mainCode] = (stockMap[mainCode] || 0) + xValue; 
+              const mainKey = makeKey(targetProduct.brand, targetProduct.code);
+              stockMap[mainKey] = (stockMap[mainKey] || 0) + xValue; 
               
-              if (!barcodeMap[mainCode]) barcodeMap[mainCode] = new Set();
+              if (!barcodeMap[mainKey]) barcodeMap[mainKey] = new Set();
               
               [lIdx, pIdx, rIdx, tIdx, vIdx].forEach(idx => {
                   if (idx !== -1) {
                       const val = cleanStr(row[idx]);
-                      if (val && val !== "0" && val !== "-") barcodeMap[mainCode].add(val);
+                      if (val && val !== "0" && val !== "-") barcodeMap[mainKey].add(val);
                   }
               });
             }
@@ -583,14 +602,15 @@ function App() {
         const updatePromises = [];
         let updatedCount = 0;
 
-        for (const [code, stockVal] of Object.entries(stockMap)) {
-          const isGroup = groups.some(g => g.code === code);
+        for (const [key, stockVal] of Object.entries(stockMap)) {
+          const [b, c] = key.split('|||');
+          const isGroup = groups.some(g => g.code === c && g.brand === b);
           const targetTable = isGroup ? 'groups' : 'master_products';
 
-          const newBarcodeStr = Array.from(barcodeMap[code] || []).filter(Boolean).join(',');
+          const newBarcodeStr = Array.from(barcodeMap[key] || []).filter(Boolean).join(',');
           
           updatePromises.push(
-            supabase.from(targetTable).update({ stock: stockVal, barcode: newBarcodeStr }).eq('code', code)
+            supabase.from(targetTable).update({ stock: stockVal, barcode: newBarcodeStr }).eq('code', c).eq('brand', b)
           );
           updatedCount++;
         }
@@ -634,8 +654,8 @@ function App() {
             });
 
             if (targetProduct) {
-              const mainCode = targetProduct.code;
-              hqMap[mainCode] = (hqMap[mainCode] || 0) + nValue;
+              const mainKey = makeKey(targetProduct.brand, targetProduct.code);
+              hqMap[mainKey] = (hqMap[mainKey] || 0) + nValue;
               matchedCount++;
             } else {
               unmatchedCount++; 
@@ -646,11 +666,12 @@ function App() {
         const updatePromises = [];
         let updatedDbCount = 0;
 
-        for (const [code, stockVal] of Object.entries(hqMap)) {
-          const isGroup = groups.some(g => g.code === code);
+        for (const [key, stockVal] of Object.entries(hqMap)) {
+          const [b, c] = key.split('|||');
+          const isGroup = groups.some(g => g.code === c && g.brand === b);
           const targetTable = isGroup ? 'groups' : 'master_products';
 
-          updatePromises.push(supabase.from(targetTable).update({ hq_stock: stockVal }).eq('code', code));
+          updatePromises.push(supabase.from(targetTable).update({ hq_stock: stockVal }).eq('code', c).eq('brand', b));
           updatedDbCount++;
         }
 
@@ -704,12 +725,12 @@ function App() {
             });
 
             if (targetProduct) {
-              const mainCode = targetProduct.code;
-              if (!orderMap[mainCode]) orderMap[mainCode] = { w1: 0, w2: 0, w3: 0 };
+              const mainKey = makeKey(targetProduct.brand, targetProduct.code);
+              if (!orderMap[mainKey]) orderMap[mainKey] = { w1: 0, w2: 0, w3: 0 };
               
-              orderMap[mainCode].w1 += kValue;
-              orderMap[mainCode].w2 += lValue;
-              orderMap[mainCode].w3 += mValue;
+              orderMap[mainKey].w1 += kValue;
+              orderMap[mainKey].w2 += lValue;
+              orderMap[mainKey].w3 += mValue;
               matchedCount++;
             } else {
               unmatchedCount++;
@@ -720,8 +741,9 @@ function App() {
         const updatePromises = [];
         let updatedDbCount = 0;
 
-        for (const [code, orders] of Object.entries(orderMap)) {
-          const isGroup = groups.some(g => g.code === code);
+        for (const [key, orders] of Object.entries(orderMap)) {
+          const [b, c] = key.split('|||');
+          const isGroup = groups.some(g => g.code === c && g.brand === b);
           const targetTable = isGroup ? 'groups' : 'master_products';
 
           updatePromises.push(
@@ -729,7 +751,7 @@ function App() {
               order_w1: orders.w1,
               order_w2: orders.w2,
               order_w3: orders.w3
-            }).eq('code', code)
+            }).eq('code', c).eq('brand', b)
           );
           updatedDbCount++;
         }
@@ -862,7 +884,7 @@ function App() {
                 
                 <Select 
                   placeholder="기존 상품 검색 및 수정..." 
-                  options={(masterProducts || []).map(p => ({ label: `[${p?.code || ''}] ${p?.name || ''}`, data: p }))} 
+                  options={(masterProducts || []).map(p => ({ label: `[${p?.brand || ''}] [${p?.code || ''}] ${p?.name || ''}`, data: p }))} 
                   onChange={(opt) => {
                     if(opt && opt.data) {
                       setTempChild({
@@ -899,7 +921,7 @@ function App() {
                 
                 <Select 
                   placeholder="기존 그룹 불러오기 및 재매핑..." 
-                  options={(groups || []).map(g => ({ label: `[${g.type}] [${g.code}] ${g.name}`, data: g }))} 
+                  options={(groups || []).map(g => ({ label: `[${g.brand || ''}] [${g.type}] [${g.code}] ${g.name}`, data: g }))} 
                   onChange={(opt) => {
                     if(opt && opt.data) {
                       setGroupInput({
@@ -938,8 +960,8 @@ function App() {
                        const pName = String(p?.name || '').toLowerCase();
                        const pStyle = String(p?.style_no || '').toLowerCase();
                        return (gName && (pName.includes(gName) || pStyle.includes(gName))) || (gStyle && (pStyle.includes(gStyle) || pName.includes(gStyle)));
-                     }).map(p => ({ label: `[${p?.code || ''}] ${p?.style_no || ''} - ${p?.name || ''}`, value: p?.code, data: p }))} 
-                     value={(groupInput?.children || []).map(c => ({ label: c?.name || '', value: c?.code || '', data: c }))} 
+                     }).map(p => ({ label: `[${p?.brand || ''}] [${p?.code || ''}] ${p?.style_no || ''} - ${p?.name || ''}`, value: makeKey(p?.brand, p?.code), data: p }))} 
+                     value={(groupInput?.children || []).map(c => ({ label: c?.name || '', value: makeKey(groupInput.brand, c?.code), data: c }))} 
                      onChange={(opts) => setGroupInput({...groupInput, children: opts ? opts.map(o => o.data) : []})} 
                    />
                    <div style={{ marginTop: '10px', maxHeight: '120px', overflowY: 'auto', fontSize:'11px', background:'#fff', border:'1px solid #eee', borderRadius:'4px' }}>
@@ -1033,9 +1055,11 @@ function App() {
                 <tbody>
                   {visibleData.map((item, idx) => {
                     const isGhost = item.isGhost;
-                    const isE = editingCode === item.code && !isGhost;
+                    // 💡 수정 버튼 상태 확인 로직도 브랜드+품번으로 체크
+                    const isE = editingItem && editingItem.code === item.code && editingItem.brand === item.brand && !isGhost;
                     const isChild = item.isMappedChild;
-                    const trBg = selectedCodes.includes(item.code) ? '#fff9db' : (isE ? '#e3f2fd' : (isChild ? '#f8fbfc' : '#fff'));
+                    const itemKey = makeKey(item.brand, item.code);
+                    const trBg = selectedCodes.includes(itemKey) ? '#fff9db' : (isE ? '#e3f2fd' : (isChild ? '#f8fbfc' : '#fff'));
                     
                     const typeStr = String(item.type || '');
                     const isGroupType = typeStr.includes('묶음') || typeStr.includes('세트');
@@ -1046,16 +1070,16 @@ function App() {
                     const curMargin = (curS - Math.floor(curS * 0.18)) - Number(item.cost || 0) - 5000;
                     
                     return (
-                      <tr key={`${item.code}-${idx}`} style={{ background: trBg }}>
-                        <td style={{ ...tdStyle, ...fX(cols.chk.l), ...cellS(cols.chk), background: trBg }}>{!isGhost && <input type="checkbox" checked={selectedCodes.includes(item.code)} onChange={() => setSelectedCodes(prev => prev.includes(item.code) ? prev.filter(c => c !== item.code) : [...prev, item.code])} />}</td>
-                        <td style={{ ...tdStyle, ...fX(cols.mng.l), ...cellS(cols.mng), background: trBg }}>{!isGhost ? (isE ? <button onClick={()=>saveEdit(item)} style={btnStyle}>완료</button> : <button onClick={()=>{setEditingCode(item.code); setEditRow({...item});}} style={btnStyle}>수정</button>) : <span style={{color:GHOST_COLOR}}>-</span>}</td>
+                      <tr key={`${itemKey}-${idx}`} style={{ background: trBg }}>
+                        <td style={{ ...tdStyle, ...fX(cols.chk.l), ...cellS(cols.chk), background: trBg }}>{!isGhost && <input type="checkbox" checked={selectedCodes.includes(itemKey)} onChange={() => setSelectedCodes(prev => prev.includes(itemKey) ? prev.filter(c => c !== itemKey) : [...prev, itemKey])} />}</td>
+                        <td style={{ ...tdStyle, ...fX(cols.mng.l), ...cellS(cols.mng), background: trBg }}>{!isGhost ? (isE ? <button onClick={()=>saveEdit(item)} style={btnStyle}>완료</button> : <button onClick={()=>{setEditingItem({brand: item.brand, code: item.code}); setEditRow({...item});}} style={btnStyle}>수정</button>) : <span style={{color:GHOST_COLOR}}>-</span>}</td>
                         <td style={{ ...tdStyle, ...fX(cols.brd.l), ...cellS(cols.brd), background: trBg }}>{isGhost ? <span style={{color:GHOST_COLOR}}>{item.brand}</span> : (isE ? <select value={editRow.brand||''} onChange={e=>setEditRow({...editRow, brand:e.target.value})} style={{fontSize:'10px', padding:'0', width:'100%'}}><option value="">-</option>{brands.map(b=><option key={b} value={b}>{b}</option>)}</select> : item.brand)}</td>
                         <td style={{ ...tdStyle, ...fX(cols.sea.l), ...cellS(cols.sea), background: trBg }}>{isGhost ? <span style={{color:GHOST_COLOR}}>{item.season}</span> : (isE ? <select value={editRow.season||''} onChange={e=>setEditRow({...editRow, season:e.target.value})} style={{fontSize:'10px', padding:'0', width:'100%'}}><option value="">-</option>{seasons.map(s=><option key={s} value={s}>{s}</option>)}</select> : item.season)}</td>
                         
                         <td style={{ ...tdStyle, ...fX(cols.typ.l), ...cellS(cols.typ), background: trBg, color: isGhost ? GHOST_COLOR : (isGroupType?'#6c5ce7':(isChild?'#b2bec3':'#999')), fontWeight: isGroupType?'bold':'normal' }}>
                           {isGroupType && (
-                            <span onClick={() => toggleGroup(item.code)} style={{cursor:'pointer', marginRight:'4px', display:'inline-block', width:'12px', color:'#6c5ce7'}}>
-                              {collapsedGroups.includes(item.code) ? '▶' : '▼'}
+                            <span onClick={() => toggleGroup(itemKey)} style={{cursor:'pointer', marginRight:'4px', display:'inline-block', width:'12px', color:'#6c5ce7'}}>
+                              {collapsedGroups.includes(itemKey) ? '▶' : '▼'}
                             </span>
                           )}
                           {item.type}
@@ -1095,7 +1119,6 @@ function App() {
                 <button onClick={handleExpandAll} style={{padding:'6px 10px', background:'#34495e', color:'#fff', border:'none', borderRadius:'4px', fontSize:'11px', cursor:'pointer', fontWeight:'bold'}}>▼ 전체열기</button>
                 <button onClick={handleCollapseAll} style={{padding:'6px 10px', background:'#7f8c8d', color:'#fff', border:'none', borderRadius:'4px', fontSize:'11px', cursor:'pointer', fontWeight:'bold'}}>▶ 전체닫기</button>
                 <div style={{width:'1px', background:'#ddd', margin:'0 2px'}}></div>
-                {/* 💡 3번 재고발주 메뉴에도 엑셀 다운로드 버튼 추가 완료 */}
                 <button onClick={downloadListExcel} style={{padding:'6px 10px', background:'#27ae60', color:'#fff', border:'none', borderRadius:'4px', fontSize:'11px', cursor:'pointer', fontWeight:'bold'}}>📄 {selectedCodes.length > 0 ? "선택 엑셀" : "전체 엑셀"}</button>
                 <label style={{fontSize:'11px', display:'flex', alignItems:'center', gap:'5px', cursor:'pointer', background:'#e8f8f5', padding:'6px 12px', borderRadius:'6px', border:'1px solid #1abc9c', color:'#16a085', fontWeight:'bold'}}>
                   📦 온라인재고 (사전생성)
@@ -1151,29 +1174,30 @@ function App() {
                 <tbody>
                   {visibleData.map((item, idx) => {
                     const isGhost = item.isGhost;
-                    const isE = editingCode === item.code; 
+                    const isE = editingItem && editingItem.code === item.code && editingItem.brand === item.brand && !isGhost; 
                     const isChild = item.isMappedChild;
-                    const trBg = selectedCodes.includes(item.code) ? '#fff9db' : (isE ? '#e3f2fd' : (isChild ? '#f8fbfc' : '#fff'));
+                    const itemKey = makeKey(item.brand, item.code);
+                    const trBg = selectedCodes.includes(itemKey) ? '#fff9db' : (isE ? '#e3f2fd' : (isChild ? '#f8fbfc' : '#fff'));
                     const txtColor = isGhost ? '#95a5a6' : 'inherit'; 
                     
                     const typeStr = String(item.type || '');
                     const isGroupType = typeStr.includes('묶음') || typeStr.includes('세트');
                     
                     return (
-                      <tr key={`inv-${item.code}-${idx}`} style={{ background: trBg, color: txtColor }}>
+                      <tr key={`inv-${itemKey}-${idx}`} style={{ background: trBg, color: txtColor }}>
                         <td style={{ ...tdStyle, ...fX(cols.chk.l), ...cellS(cols.chk), background: trBg }}>
-                           <input type="checkbox" checked={selectedCodes.includes(item.code)} onChange={() => setSelectedCodes(prev => prev.includes(item.code) ? prev.filter(c => c !== item.code) : [...prev, item.code])} />
+                           <input type="checkbox" checked={selectedCodes.includes(itemKey)} onChange={() => setSelectedCodes(prev => prev.includes(itemKey) ? prev.filter(c => c !== itemKey) : [...prev, itemKey])} />
                         </td>
                         <td style={{ ...tdStyle, ...fX(cols.mng.l), ...cellS(cols.mng), background: trBg }}>
-                           {isE ? <button onClick={()=>saveEdit(item)} style={btnStyle}>완료</button> : <button onClick={()=>{setEditingCode(item.code); setEditRow({...item});}} style={btnStyle}>수정</button>}
+                           {isE ? <button onClick={()=>saveEdit(item)} style={btnStyle}>완료</button> : <button onClick={()=>{setEditingItem({brand: item.brand, code: item.code}); setEditRow({...item});}} style={btnStyle}>수정</button>}
                         </td>
                         <td style={{ ...tdStyle, ...fX(cols.brd.l), ...cellS(cols.brd), background: trBg }}>{item.brand}</td>
                         <td style={{ ...tdStyle, ...fX(cols.sea.l), ...cellS(cols.sea), background: trBg }}>{item.season}</td>
                         
                         <td style={{ ...tdStyle, ...fX(cols.typ.l), ...cellS(cols.typ), background: trBg, fontWeight: isGroupType?'bold':'normal' }}>
                           {isGroupType && (
-                            <span onClick={() => toggleGroup(item.code)} style={{cursor:'pointer', marginRight:'4px', display:'inline-block', width:'12px', color:'#6c5ce7'}}>
-                              {collapsedGroups.includes(item.code) ? '▶' : '▼'}
+                            <span onClick={() => toggleGroup(itemKey)} style={{cursor:'pointer', marginRight:'4px', display:'inline-block', width:'12px', color:'#6c5ce7'}}>
+                              {collapsedGroups.includes(itemKey) ? '▶' : '▼'}
                             </span>
                           )}
                           {item.type}
