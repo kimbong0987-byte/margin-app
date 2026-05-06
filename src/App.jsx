@@ -6,7 +6,7 @@ import { supabase } from './supabaseClient';
 // 💡 텍스트 비교 시 띄어쓰기(공백)만 안전하게 제거하는 함수
 const cleanStr = (s) => String(s || "").replace(/\s+/g, '').toUpperCase();
 
-// 💡 브랜도와 품번을 결합하여 고유한 키를 만드는 헬퍼 함수
+// 💡 브랜드와 품번을 결합하여 고유한 키를 만드는 함수
 const makeKey = (brand, code) => `${brand}|||${code}`;
 
 function App() {
@@ -31,13 +31,12 @@ function App() {
   const [filterBrand, setFilterBrand] = useState('전체');   
   const [filterSeason, setFilterSeason] = useState('전체'); 
   const [sortConfig, setSortConfig] = useState({ key: 'code', direction: 'asc' });
-  const [selectedCodes, setSelectedCodes] = useState([]); // 💡 이제 brand|||code 형태의 문자열이 들어갑니다.
+  const [selectedCodes, setSelectedCodes] = useState([]); 
 
   const [batchInput, setBatchInput] = useState({ 
     cost: '', tagPrice: '', priceNaver: '', priceCoupang: '', priceRocket: '', priceGold: '', priceSale: '' 
   });
   
-  // 💡 수정 중인 항목을 브랜드+품번으로 정확히 식별하기 위해 상태 변경
   const [editingItem, setEditingItem] = useState(null); 
   const [editRow, setEditRow] = useState({});
 
@@ -103,7 +102,6 @@ function App() {
 
   const processedData = useMemo(() => {
     const masterMap = new Map();
-    // 💡 맵의 키를 브랜드+품번으로 변경
     masterProducts.forEach(p => masterMap.set(makeKey(p.brand, p.code), p));
 
     const term = (searchTerm || '').toLowerCase().trim();
@@ -127,11 +125,10 @@ function App() {
     const matchedGroups = groups.filter(isMatch).map(g => ({ ...g, type: g.type || '묶음' }));
     const matchedSingles = masterProducts.filter(isMatch).map(p => ({ ...p, type: '단품' }));
 
-    const matchedMappedCodes = new Set(); // brand|||code
+    const matchedMappedCodes = new Set();
     matchedGroups.forEach(g => {
       if (g.children) {
         g.children.forEach(c => {
-          // 💡 하위 구성품도 소속된 그룹과 동일한 브랜드를 가진다고 가정하고 찾습니다.
           const childKey = makeKey(g.brand, c.code);
           if (masterMap.has(childKey)) matchedMappedCodes.add(childKey);
         });
@@ -273,7 +270,7 @@ function App() {
   };
 
   // ==========================================
-  // 4. 데이터 저장 처리 (★ 브랜드+품번 복합 검색)
+  // 4. 데이터 저장 처리
   // ==========================================
   const addCategory = async () => { if(!newCatInput.trim()) return; await supabase.from('categories').insert([{name: newCatInput}]); setNewCatInput(''); fetchData(); };
   const deleteCategory = async (n) => { if(window.confirm(`[${n}] 삭제하시겠습니까?`)) { await supabase.from('categories').delete().eq('name',n); fetchData(); } };
@@ -282,7 +279,6 @@ function App() {
   const addSeason = async () => { if(!newSeasonInput.trim()) return; await supabase.from('seasons').insert([{name: newSeasonInput}]); setNewSeasonInput(''); fetchData(); };
   const deleteSeason = async (n) => { if(window.confirm(`[${n}] 삭제하시겠습니까?`)) { await supabase.from('seasons').delete().eq('name',n); fetchData(); } };
 
-  // 💡 단품 등록 시 "브랜드와 품번"이 모두 일치하는 항목이 있는지 확인
   const handleRegisterMaster = async () => {
     if (!tempChild.품번코드) return alert("❌ 품번코드(필수)를 입력해주세요.");
     if (!tempChild.brand) return alert("❌ 브랜드를 선택해주세요. (동일 품번 구분용)");
@@ -313,7 +309,6 @@ function App() {
     fetchData();
   };
 
-  // 💡 그룹 저장 시 "브랜드와 품번"이 모두 일치하는 항목이 있는지 확인
   const handleSaveGroup = async () => {
     if (!groupInput.groupCode) return alert("❌ 그룹 관리용 품번을 입력해주세요.");
     if (!groupInput.brand) return alert("❌ 브랜드를 선택해주세요.");
@@ -364,7 +359,7 @@ function App() {
       order_w2: Number(editRow.order_w2 || 0),
       order_w3: Number(editRow.order_w3 || 0),
       prev_naver: Number(item.price_naver || 0), prev_sale: Number(item.price_sale || 0)
-    }).eq('code', editingItem.code).eq('brand', editingItem.brand); // 💡 수정하는 원본의 브랜드와 코드로 타겟팅!
+    }).eq('code', editingItem.code).eq('brand', editingItem.brand); 
     
     setEditingItem(null); 
     fetchData();
@@ -381,7 +376,6 @@ function App() {
     if (batchInput.priceGold) up.price_gold = Number(batchInput.priceGold);
     if (batchInput.priceSale) up.price_sale = Number(batchInput.priceSale);
 
-    // 💡 여러 브랜드/코드가 섞여있으므로 개별 업데이트 처리
     const promises = selectedCodes.map(key => {
        const [b, c] = key.split('|||');
        const tbl = groups.some(g => g.code === c && g.brand === b) ? 'groups' : 'master_products';
@@ -397,7 +391,6 @@ function App() {
   const handleBatchDelete = async () => {
     if (!selectedCodes.length || !window.confirm("⚠️ 정말 삭제하시겠습니까?")) return;
     
-    // 💡 여러 브랜드/코드가 섞여있으므로 개별 삭제 처리
     const promises = selectedCodes.map(key => {
         const [b, c] = key.split('|||');
         const tbl = groups.some(g => g.code === c && g.brand === b) ? 'groups' : 'master_products';
@@ -411,7 +404,7 @@ function App() {
   };
 
   // ==========================================
-  // 📊 엑셀 처리
+  // 📊 엑셀 처리 (★ 마스터 엑셀 업로드 버그 완벽 수정!)
   // ==========================================
   const handleExcelUpload = async () => {
     if (!selectedFile) return alert("파일을 선택해주세요.");
@@ -419,28 +412,42 @@ function App() {
     reader.onload = async (e) => {
       try {
         const data = XLSX.read(e.target.result, { type: 'binary' });
-        const parsedRows = XLSX.utils.sheet_to_json(data.Sheets[data.SheetNames[0]]);
+        const parsedRows = XLSX.utils.sheet_to_json(data.Sheets[data.SheetNames[0]], { defval: "" });
+        
+        const updatePromises = [];
         
         for (const i of parsedRows) {
             const payload = { 
-              brand: String(i.브랜드 || ''), season: String(i.시즌 || ''), category: String(i.복종 || '미분류'), 
-              code: String(i.품번 || ''), style_no: String(i.스타일 || ''), name: String(i.상품명 || ''), 
-              cost: Number(i.원가 || 0), tag_price: Number(i.Tag가 || 0) 
+              brand: String(i.브랜드 || '').trim(), 
+              season: String(i.시즌 || '').trim(), 
+              category: String(i.복종 || '미분류').trim(), 
+              code: String(i.품번 || '').trim(), 
+              style_no: String(i.스타일 || '').trim(), 
+              name: String(i.상품명 || '').trim(), 
+              cost: Number(String(i.원가 || "0").replace(/,/g, '')), 
+              tag_price: Number(String(i.Tag가 || "0").replace(/,/g, '')) 
             };
             if(!payload.code || !payload.brand) continue;
 
-            const { data: exist } = await supabase.from('master_products').select('code').eq('code', payload.code).eq('brand', payload.brand);
+            // 💡 더 이상 upsert를 쓰지 않고, 브랜드와 코드를 철저히 확인한 뒤 분기 처리합니다.
+            const { data: exist } = await supabase.from('master_products')
+              .select('code').eq('code', payload.code).eq('brand', payload.brand);
+              
             if (exist && exist.length > 0) {
-              await supabase.from('master_products').update(payload).eq('code', payload.code).eq('brand', payload.brand);
+              updatePromises.push(supabase.from('master_products').update(payload).eq('code', payload.code).eq('brand', payload.brand));
             } else {
-              await supabase.from('master_products').insert([payload]);
+              updatePromises.push(supabase.from('master_products').insert([payload]));
             }
         }
-
-        alert("✅ 마스터 엑셀 업로드 성공!"); 
+        
+        await Promise.all(updatePromises);
+        alert("✅ 마스터 엑셀 일괄 업로드 성공!"); 
         setSelectedFile(null);
         fetchData();
-      } catch (err) { alert("엑셀 파싱 에러"); }
+      } catch (err) { 
+        console.error(err);
+        alert("❌ 엑셀 파싱 에러"); 
+      }
     };
     reader.readAsBinaryString(selectedFile);
   };
@@ -579,8 +586,6 @@ function App() {
           const xValue = Number(String(row[xIdx] || "0").replace(/,/g, '')) || 0; 
 
           if (cValue && cValue !== "상품코드") {
-            // 바코드 사전 구축 시 여러 브랜드에서 동일 코드가 있다면 첫번째 것을 매핑할 가능성이 높습니다.
-            // (일반적으로 재고 엑셀에 브랜드 정보가 없기 때문)
             const targetProduct = allProducts.find(p => cleanStr(p.code) === cValue);
 
             if (targetProduct) {
@@ -1055,8 +1060,7 @@ function App() {
                 <tbody>
                   {visibleData.map((item, idx) => {
                     const isGhost = item.isGhost;
-                    // 💡 수정 버튼 상태 확인 로직도 브랜드+품번으로 체크
-                    const isE = editingItem && editingItem.code === item.code && editingItem.brand === item.brand && !isGhost;
+                    const isE = editingItem && editingItem.code === item.code && editingItem.brand === item.brand && !isGhost; 
                     const isChild = item.isMappedChild;
                     const itemKey = makeKey(item.brand, item.code);
                     const trBg = selectedCodes.includes(itemKey) ? '#fff9db' : (isE ? '#e3f2fd' : (isChild ? '#f8fbfc' : '#fff'));
@@ -1119,6 +1123,7 @@ function App() {
                 <button onClick={handleExpandAll} style={{padding:'6px 10px', background:'#34495e', color:'#fff', border:'none', borderRadius:'4px', fontSize:'11px', cursor:'pointer', fontWeight:'bold'}}>▼ 전체열기</button>
                 <button onClick={handleCollapseAll} style={{padding:'6px 10px', background:'#7f8c8d', color:'#fff', border:'none', borderRadius:'4px', fontSize:'11px', cursor:'pointer', fontWeight:'bold'}}>▶ 전체닫기</button>
                 <div style={{width:'1px', background:'#ddd', margin:'0 2px'}}></div>
+                {/* 💡 3번 재고발주 메뉴 엑셀 다운로드 버튼 */}
                 <button onClick={downloadListExcel} style={{padding:'6px 10px', background:'#27ae60', color:'#fff', border:'none', borderRadius:'4px', fontSize:'11px', cursor:'pointer', fontWeight:'bold'}}>📄 {selectedCodes.length > 0 ? "선택 엑셀" : "전체 엑셀"}</button>
                 <label style={{fontSize:'11px', display:'flex', alignItems:'center', gap:'5px', cursor:'pointer', background:'#e8f8f5', padding:'6px 12px', borderRadius:'6px', border:'1px solid #1abc9c', color:'#16a085', fontWeight:'bold'}}>
                   📦 온라인재고 (사전생성)
