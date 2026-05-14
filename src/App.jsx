@@ -53,9 +53,6 @@ function App() {
   const [editingCellValue, setEditingCellValue] = useState('');
   const isSavingCellRef = React.useRef(false);
 
-  // 필터 강화
-  const [marginFilter, setMarginFilter] = useState({ min: '', max: '' });
-  const [quickFilter, setQuickFilter] = useState('');
 
   // 가격 변경 전 값 기록 (변경 시점마다 갱신)
   const [localPrev, setLocalPrev] = useState({});
@@ -311,14 +308,9 @@ function App() {
     return mapped.filter(item => {
       if (item.isMappedChild) return true; // 자식 행은 필터 통과
       const m = item.margin || 0;
-      if (marginFilter.min !== '' && m < Number(marginFilter.min)) return false;
-      if (marginFilter.max !== '' && m > Number(marginFilter.max)) return false;
-      if (quickFilter === 'neg') return m < 0;
-      if (quickFilter === 'zero-stock') return Number(item.stock || 0) === 0;
-      if (quickFilter === 'has-order') return (Number(item.order_w1||0)+Number(item.order_w2||0)+Number(item.order_w3||0)) > 0;
       return true;
     });
-  }, [masterProducts, groups, filterCategory, filterBrand, filterSeason, searchTerm, sortConfig, marginFilter, quickFilter, feeRate, fixedCost, localPrev]);
+  }, [masterProducts, groups, filterCategory, filterBrand, filterSeason, searchTerm, sortConfig, feeRate, fixedCost, localPrev]);
 
   const visibleData = useMemo(() => {
     return processedData.filter(item => {
@@ -1159,26 +1151,6 @@ function App() {
               </div>
             </div>
 
-            {/* 마진 범위 & 퀵 필터 */}
-            <div style={{ background:'#f8f9fa', padding:'8px 12px', borderRadius:'8px', marginBottom:'8px', display:'flex', gap:'10px', alignItems:'center', flexWrap:'wrap', border:'1px solid #ddd', fontSize:'11px' }}>
-              <strong>🔍 마진 범위:</strong>
-              <input type="number" placeholder="최소" value={marginFilter.min} onChange={e=>setMarginFilter({...marginFilter,min:e.target.value})} style={{width:'70px',padding:'3px 5px',border:'1px solid #ccc',borderRadius:'4px',fontSize:'11px'}} />
-              <span>~</span>
-              <input type="number" placeholder="최대" value={marginFilter.max} onChange={e=>setMarginFilter({...marginFilter,max:e.target.value})} style={{width:'70px',padding:'3px 5px',border:'1px solid #ccc',borderRadius:'4px',fontSize:'11px'}} />
-              <button onClick={()=>setMarginFilter({min:'',max:''})} style={{padding:'3px 8px',border:'1px solid #ccc',borderRadius:'4px',fontSize:'11px',cursor:'pointer',background:'#fff'}}>초기화</button>
-              <div style={{width:'1px',height:'20px',background:'#ddd'}}/>
-              <strong>⚡ 퀵필터:</strong>
-              {[
-                {id:'neg', label:'🔴 마진 마이너스'},
-                {id:'zero-stock', label:'📦 온라인재고 0'},
-                {id:'has-order', label:'🛒 발주 있음'},
-              ].map(({id,label}) => (
-                <button key={id} onClick={()=>setQuickFilter(quickFilter===id?'':id)}
-                  style={{padding:'3px 10px',border:`1px solid ${quickFilter===id?'#e74c3c':'#ccc'}`,borderRadius:'12px',fontSize:'11px',cursor:'pointer',background:quickFilter===id?'#fdf0f0':'#fff',color:quickFilter===id?'#e74c3c':'#555',fontWeight:quickFilter===id?'bold':'normal'}}>
-                  {label}
-                </button>
-              ))}
-            </div>
 
             <div style={{ background:'#ebf3f9', padding:'8px', borderRadius:'8px', marginBottom:'15px', display:'flex', gap:'8px', alignItems:'center', border:'1px solid #3498db', overflowX:'auto', whiteSpace:'nowrap' }}>
               <strong style={{fontSize:'11px'}}>⚡ 일괄변경 ({selectedCodes.length}):</strong>
