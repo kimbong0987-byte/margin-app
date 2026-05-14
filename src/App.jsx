@@ -835,15 +835,17 @@ function App() {
           // 1순위: C열 상품코드 → DB product.code 직접 매핑
           let product = allProducts.find(p => String(p.code) === numCode);
 
-          // 2순위: L열 바코드 뒤 3자리(사이즈) 제거 → 자식 style_no 매칭 (색상 보존)
+          // 2순위: L열 바코드 뒤 3자리(사이즈) 제거 → 자식 style_no 매칭 (색상 보존 우선)
           if (!product && barcode.length > 3) {
             const styleNoChild = barcode.slice(0, -3);
             product = allProducts.find(p => p.style_no && styleNoMatch(p.style_no, styleNoChild));
+            if (!product) product = allProducts.find(p => p.style_no && codesMatch(p.style_no, styleNoChild));
           }
 
-          // 3순위: M열 모델NO → 부모 style_no 매칭 (색상 보존)
+          // 3순위: M열 모델NO → 부모 style_no 매칭 (색상 보존 우선)
           if (!product && modelNo) {
             product = allProducts.find(p => p.style_no && styleNoMatch(p.style_no, modelNo));
+            if (!product) product = allProducts.find(p => p.style_no && codesMatch(p.style_no, modelNo));
           }
 
           if (product) {
@@ -910,7 +912,9 @@ function App() {
 
           // 1순위: 바코드 뒤 3자리 제거 → style_no 색상 보존 매칭
           let product = allProducts.find(p => p.style_no && styleNoMatch(p.style_no, styleNoChild));
-          // 2순위: 전체 바코드로 fallback
+          // 2순위: 색상 정규화 매칭 (style_no에 색상 없는 단품 케이스)
+          if (!product) product = allProducts.find(p => p.style_no && codesMatch(p.style_no, styleNoChild));
+          // 3순위: 전체 바코드로 fallback
           if (!product) product = findProductByBarcode(fullBarcode, allProducts);
 
           if (product) {
@@ -1021,12 +1025,22 @@ function App() {
 
           // 1순위: 뒤 3자리 제거한 코드 → style_no 색상 보존 매칭 (리오더 3↔7 자동처리)
           let product = allProducts.find(p => p.style_no && styleNoMatch(p.style_no, styleNoChild));
-          // 2순위: 전체 바코드로 fallback
+          // 2순위: style_no 색상 정규화 매칭 (style_no에 색상이 없는 단품 케이스)
+          if (!product) product = allProducts.find(p => p.style_no && codesMatch(p.style_no, styleNoChild));
+          // 3순위: 전체 바코드로 fallback
           if (!product) product = findProductByBarcode(bc, allProducts);
 
           if (product) {
-            const isParentGroup = groups.some(g => g.code === product.code && g.brand === product.brand && g.children && g.children.length > 0);
-            if (isParentGroup) { matched++; continue; }
+            // 부모 그룹이면 해당 바코드의 자식 찾기 시도
+            const parentGrp = groups.find(g => g.code === product.code && g.brand === product.brand && g.children && g.children.length > 0);
+            if (parentGrp) {
+              const child = allProducts.find(p =>
+                parentGrp.children.some(c => c.code === p.code) && p.brand === parentGrp.brand &&
+                (styleNoMatch(p.style_no, styleNoChild) || codesMatch(p.style_no, styleNoChild))
+              );
+              if (child) { product = child; }
+              else { matched++; continue; } // 자식 특정 불가 → 스킵
+            }
             const key = makeKey(product.brand, product.code);
             if (!orderMap[key]) orderMap[key] = { w1: 0, w2: 0, w3: 0 };
             orderMap[key].w1 += w1;
