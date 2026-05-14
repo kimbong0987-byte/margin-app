@@ -9,20 +9,23 @@ const cleanStr = (s) => String(s || "").replace(/\s+/g, '').toUpperCase();
 // 💡 브랜드와 품번을 결합하여 고유한 키를 만드는 함수
 const makeKey = (brand, code) => `${brand}|||${code}`;
 
-// 💡 바코드 정규화: 세대 구분자(3/7)와 색상+사이즈 접미사 제거
-// 예) MW3EBWPL84BK064 → MWEBWPL84
-// 예) MW7EBWPL841BK064 → MWEBWPL841 (리오더, 숫자 확장)
+// 💡 바코드 정규화: 색상+사이즈 접미사, 2자리 색상 접미사, 세대구분자(3/7) 제거
+// MW3EBWPL84BK064 → MWEBWPL84
+// MW7EBWPL841BK064 → MWEBWPL841  (리오더, 숫자 1자리 확장)
+// PE3HFURL73MG → PEHFURL73      (색상2자만 있을 때도 제거)
+// TS5STS561RE → TS5STS561       (세대구분자 없는 코드는 색상만 제거)
 const normalizeBarcode = (code) => {
   let s = cleanStr(code);
-  // 끝 색상+사이즈 제거: 영문2자+숫자3자 (예: BK064, NA095, CH110)
+  // 1) 끝 색상+사이즈 제거: 영문2자+숫자3자 (예: BK064, NA095)
   s = s.replace(/[A-Z]{2}\d{3}$/, '');
-  // 초기 알파벳 뒤 세대숫자(3 또는 7) 제거
-  s = s.replace(/^([A-Z]+)[37]/, '$1');
+  // 2) 끝 색상2자만 제거 (예: MG, RE, BK) - 위에서 안 걸린 경우
+  s = s.replace(/[A-Z]{2}$/, '');
+  // 3) 세대구분자 제거: 브랜드 알파벳 뒤의 3 또는 7 (뒤에 알파벳이 올 때만)
+  s = s.replace(/^([A-Z]+)[37](?=[A-Z])/, '$1');
   return s;
 };
 
-// 💡 두 코드가 동일 상품인지 비교 (리오더 숫자 확장 포함)
-// MW3EBWPL84... 와 MW7EBWPL841... → 정규화 후 MWEBWPL84 / MWEBWPL841 → 짧은쪽이 긴쪽의 접두사면 동일
+// 💡 두 코드가 동일 상품인지 비교 (리오더 숫자 1자리 확장 포함)
 const codesMatch = (a, b) => {
   if (!a || !b) return false;
   const na = normalizeBarcode(a);
@@ -31,23 +34,21 @@ const codesMatch = (a, b) => {
   if (na === nb) return true;
   const shorter = na.length <= nb.length ? na : nb;
   const longer  = na.length <= nb.length ? nb : na;
-  return longer.startsWith(shorter) && (longer.length - shorter.length) <= 1;
+  // 리오더: 숫자 1자리만 확장된 경우 (예: 84→841)
+  return longer.startsWith(shorter) && (longer.length - shorter.length) === 1 && /\d$/.test(longer);
 };
 
-// 💡 바코드로 DB 상품 검색 (style_no → barcode 저장목록 → code 순서로 시도)
+// 💡 바코드/스타일코드로 DB 상품 검색 (style_no → barcode목록 → code 순서)
 const findProductByBarcode = (barcode, allProducts) => {
   if (!barcode) return null;
   const bc = cleanStr(barcode);
   if (!bc || bc.length < 4) return null;
-  // 1. style_no 매핑
   let p = allProducts.find(p => p.style_no && codesMatch(p.style_no, bc));
   if (p) return p;
-  // 2. 저장된 barcode 목록 매핑
   p = allProducts.find(p =>
     String(p.barcode || '').split(',').map(cleanStr).some(b => b && codesMatch(b, bc))
   );
   if (p) return p;
-  // 3. code 직접 매핑
   p = allProducts.find(p => p.code && codesMatch(p.code, bc));
   return p || null;
 };
@@ -669,47 +670,72 @@ function App() {
     reader.readAsBinaryString(file);
   };
 
-  const handleInventoryExcelUpload = async (e) => {
+  // 공통: 재고 업데이트 적용
+  const applyStockUpdate = async (stockMap, barcodeMap, label) => {
+    const updates = [];
+    for (const [key, stockVal] of Object.entries(stockMap)) {
+      const [b, c] = key.split('|||');
+      const tbl = groups.some(g => g.code === c && g.brand === b) ? 'groups' : 'master_products';
+      const barcodeStr = barcodeMap[key] ? Array.from(barcodeMap[key]).join(',') : undefined;
+      const payload = { stock: stockVal };
+      if (barcodeStr !== undefined) payload.barcode = barcodeStr;
+      updates.push(supabase.from(tbl).update(payload).eq('code', c).eq('brand', b));
+    }
+    await Promise.all(updates);
+    return updates.length;
+  };
+
+  // 라온팩토리 온라인재고: 시트 '재고코드관리_다운로드', 모델명 + 현재고(가용)
+  const handleRaonInventoryExcelUpload = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
-
+    e.target.value = null;
     const reader = new FileReader();
     reader.onload = async (ev) => {
       try {
-        const workbook = XLSX.read(ev.target.result, { type: 'binary' });
-        const sheet = workbook.Sheets[workbook.SheetNames[0]];
+        const wb = XLSX.read(ev.target.result, { type: 'binary' });
+        const sheet = wb.Sheets[wb.SheetNames[0]];
         const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
 
-        // 헤더 행 탐색: 바코드 + 합재고 컬럼 필요
-        let headerRowIndex = -1;
-        let bcIdx = -1, stockIdx = -1;
+        // 헤더는 2행 구조 (row0: 대분류, row1: 소분류)
+        // 모델명: row0에서 찾기, 현재고(가용): row0의 현재고 위치에서 row1의 '가용' 찾기
+        let modelIdx = -1, stockIdx = -1, dataStart = -1;
 
-        for (let i = 0; i < Math.min(20, rows.length); i++) {
-          const row = rows[i];
-          if (!Array.isArray(row)) continue;
-          const fBc    = row.findIndex(c => cleanStr(c) === '바코드');
-          const fStock = row.findIndex(c => cleanStr(c) === '합재고');
-          if (fBc !== -1 && fStock !== -1) {
-            headerRowIndex = i;
-            bcIdx = fBc;
-            stockIdx = fStock;
+        for (let i = 0; i < Math.min(10, rows.length); i++) {
+          const r0 = rows[i];
+          if (!Array.isArray(r0)) continue;
+          const fModel = r0.findIndex(c => cleanStr(c) === '모델명');
+          if (fModel !== -1) {
+            modelIdx = fModel;
+            // 다음 행에서 현재고 가용 위치 찾기
+            const r1 = rows[i + 1] || [];
+            const fHq = r0.findIndex(c => cleanStr(c).includes('현재고'));
+            if (fHq !== -1) {
+              for (let j = fHq; j < Math.min(fHq + 5, r0.length); j++) {
+                if (cleanStr(r1[j] || '').includes('가용')) { stockIdx = j; break; }
+              }
+            }
+            // 현재고 못찾으면 row0에서 직접 시도
+            if (stockIdx === -1) {
+              stockIdx = r0.findIndex(c => cleanStr(c).includes('현재고') && cleanStr(c).includes('가용'));
+            }
+            dataStart = i + 2; // 대분류 + 소분류 헤더 이후부터 데이터
             break;
           }
         }
-        if (headerRowIndex === -1) return alert("❌ '바코드' 또는 '합재고' 컬럼을 찾지 못했습니다.");
+        if (modelIdx === -1) return alert("❌ '모델명' 컬럼을 찾지 못했습니다.");
+        if (stockIdx === -1) stockIdx = 17; // fallback
 
         const allProducts = [...masterProducts, ...groups];
-        const stockMap = {};   // mainKey → 합재고 합산
-        const barcodeMap = {}; // mainKey → Set<바코드>
+        const stockMap = {}, barcodeMap = {};
         let matched = 0, unmatched = 0;
 
-        for (let i = headerRowIndex + 1; i < rows.length; i++) {
+        for (let i = dataStart; i < rows.length; i++) {
           const row = rows[i];
           if (!Array.isArray(row)) continue;
-
-          const bc = cleanStr(row[bcIdx]);
+          const bc = cleanStr(row[modelIdx]);
           const qty = Number(String(row[stockIdx] || '0').replace(/,/g, '')) || 0;
-          if (!bc || bc === '바코드') continue;
+          if (!bc || bc.length < 4) continue;
 
           const product = findProductByBarcode(bc, allProducts);
           if (product) {
@@ -718,28 +744,74 @@ function App() {
             if (!barcodeMap[key]) barcodeMap[key] = new Set();
             barcodeMap[key].add(bc);
             matched++;
-          } else {
-            unmatched++;
-          }
+          } else { unmatched++; }
         }
 
-        const updates = [];
-        for (const [key, stockVal] of Object.entries(stockMap)) {
-          const [b, c] = key.split('|||');
-          const tbl = groups.some(g => g.code === c && g.brand === b) ? 'groups' : 'master_products';
-          const barcodeStr = Array.from(barcodeMap[key] || []).join(',');
-          updates.push(supabase.from(tbl).update({ stock: stockVal, barcode: barcodeStr }).eq('code', c).eq('brand', b));
-        }
-        await Promise.all(updates);
-        alert(`📦 온라인재고 갱신 완료!\n✅ 매핑된 바코드: ${matched}건\n✅ 갱신 품번: ${updates.length}건\n❌ 미매핑: ${unmatched}건`);
+        const cnt = await applyStockUpdate(stockMap, barcodeMap, '라온팩토리 온라인재고');
+        alert(`📦 라온팩토리 온라인재고 갱신 완료!\n✅ 매핑된 행: ${matched}건\n✅ 갱신 품번: ${cnt}건\n❌ 미매핑: ${unmatched}건`);
         fetchData();
-      } catch (err) {
-        console.error(err);
-        alert("❌ 재고 엑셀 처리 중 오류가 발생했습니다.");
-      }
+      } catch (err) { console.error(err); alert("❌ 재고 엑셀 처리 중 오류가 발생했습니다."); }
     };
     reader.readAsBinaryString(file);
+  };
+
+  // 몽벨 온라인재고: 바코드 + 합재고 컬럼
+  const handleMWInventoryExcelUpload = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
     e.target.value = null;
+    const reader = new FileReader();
+    reader.onload = async (ev) => {
+      try {
+        const wb = XLSX.read(ev.target.result, { type: 'binary' });
+        const sheet = wb.Sheets[wb.SheetNames[0]];
+        const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
+
+        let bcIdx = -1, stockIdx = -1, dataStart = -1;
+        for (let i = 0; i < Math.min(10, rows.length); i++) {
+          const row = rows[i];
+          if (!Array.isArray(row)) continue;
+          const fBc    = row.findIndex(c => cleanStr(c) === '바코드');
+          const fStock = row.findIndex(c => cleanStr(c) === '합재고');
+          if (fBc !== -1 && fStock !== -1) {
+            bcIdx = fBc; stockIdx = fStock; dataStart = i + 2; break; // +2: 헤더2행
+          }
+          if (fBc !== -1 || fStock !== -1) {
+            // 한 줄짜리 헤더일 수도
+            if (fBc !== -1) bcIdx = fBc;
+            if (fStock !== -1) stockIdx = fStock;
+            if (bcIdx !== -1 && stockIdx !== -1) { dataStart = i + 1; break; }
+          }
+        }
+        if (bcIdx === -1 || stockIdx === -1) return alert("❌ '바코드' 또는 '합재고' 컬럼을 찾지 못했습니다.");
+
+        const allProducts = [...masterProducts, ...groups];
+        const stockMap = {}, barcodeMap = {};
+        let matched = 0, unmatched = 0;
+
+        for (let i = dataStart; i < rows.length; i++) {
+          const row = rows[i];
+          if (!Array.isArray(row)) continue;
+          const bc  = cleanStr(row[bcIdx]);
+          const qty = Number(String(row[stockIdx] || '0').replace(/,/g, '')) || 0;
+          if (!bc || bc.length < 4) continue;
+
+          const product = findProductByBarcode(bc, allProducts);
+          if (product) {
+            const key = makeKey(product.brand, product.code);
+            stockMap[key] = (stockMap[key] || 0) + qty;
+            if (!barcodeMap[key]) barcodeMap[key] = new Set();
+            barcodeMap[key].add(bc);
+            matched++;
+          } else { unmatched++; }
+        }
+
+        const cnt = await applyStockUpdate(stockMap, barcodeMap, '몽벨 온라인재고');
+        alert(`📦 몽벨 온라인재고 갱신 완료!\n✅ 매핑된 행: ${matched}건\n✅ 갱신 품번: ${cnt}건\n❌ 미매핑: ${unmatched}건`);
+        fetchData();
+      } catch (err) { console.error(err); alert("❌ 재고 엑셀 처리 중 오류가 발생했습니다."); }
+    };
+    reader.readAsBinaryString(file);
   };
 
   const handleHqStockExcelUpload = async (e) => {
@@ -817,58 +889,60 @@ function App() {
     e.target.value = null;
   };
 
-  const handleOrderExcelUpload = async (e) => {
+  // 공통: 발주 DB 업데이트
+  const applyOrderUpdate = async (orderMap) => {
+    const updates = [];
+    for (const [key, orders] of Object.entries(orderMap)) {
+      const [b, c] = key.split('|||');
+      const tbl = groups.some(g => g.code === c && g.brand === b) ? 'groups' : 'master_products';
+      updates.push(supabase.from(tbl).update({ order_w1: orders.w1, order_w2: orders.w2, order_w3: orders.w3 }).eq('code', c).eq('brand', b));
+    }
+    await Promise.all(updates);
+    return updates.length;
+  };
+
+  // 몽벨 발주: 제품명 마지막 () 안 바코드, 주문수량①(L)→w1, 주문수량②(R)→w2
+  const handleMWOrderExcelUpload = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
-
+    e.target.value = null;
     const reader = new FileReader();
     reader.onload = async (ev) => {
       try {
-        const workbook = XLSX.read(ev.target.result, { type: 'binary' });
-        const sheet = workbook.Sheets[workbook.SheetNames[0]];
+        const wb = XLSX.read(ev.target.result, { type: 'binary' });
+        const sheet = wb.Sheets[wb.SheetNames[0]];
         const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
 
-        // 헤더 행 탐색: '상품명' 컬럼 + 주차 컬럼 찾기
-        let headerRowIndex = -1;
-        let nameIdx = -1, w1Idx = -1, w2Idx = -1, w3Idx = -1;
-
-        for (let i = 0; i < Math.min(20, rows.length); i++) {
+        let nameIdx = -1, w1Idx = -1, w2Idx = -1, dataStart = 0;
+        for (let i = 0; i < Math.min(10, rows.length); i++) {
           const row = rows[i];
           if (!Array.isArray(row)) continue;
-          const fName = row.findIndex(c => cleanStr(c).includes('상품명'));
+          const fName = row.findIndex(c => cleanStr(c).includes('제품명') || cleanStr(c).includes('상품명'));
           if (fName !== -1) {
-            headerRowIndex = i;
             nameIdx = fName;
-            // 주차별 발주수량: 1단계/2단계/3단계 컬럼 탐색
-            w1Idx = row.findIndex(c => cleanStr(c).includes('1단계') || cleanStr(c).includes('1주'));
-            w2Idx = row.findIndex(c => cleanStr(c).includes('2단계') || cleanStr(c).includes('2주'));
-            w3Idx = row.findIndex(c => cleanStr(c).includes('3단계') || cleanStr(c).includes('3주'));
+            w1Idx = row.findIndex(c => cleanStr(c).includes('주문수량') && (cleanStr(c).includes('①') || cleanStr(c).includes('L') || cleanStr(c).includes('1')));
+            w2Idx = row.findIndex(c => cleanStr(c).includes('주문수량') && (cleanStr(c).includes('②') || cleanStr(c).includes('R') || cleanStr(c).includes('2')));
+            dataStart = i + 1;
             break;
           }
         }
-        // fallback: 고정 컬럼 (A=0, K=10, L=11, M=12)
-        if (headerRowIndex === -1) { headerRowIndex = 0; nameIdx = 0; }
-        if (w1Idx === -1) w1Idx = 10;
-        if (w2Idx === -1) w2Idx = 11;
-        if (w3Idx === -1) w3Idx = 12;
+        if (nameIdx === -1) { nameIdx = 0; w1Idx = 2; w2Idx = 3; dataStart = 1; }
 
         const allProducts = [...masterProducts, ...groups];
         const orderMap = {};
         let matched = 0, unmatched = 0;
 
-        for (let i = headerRowIndex + 1; i < rows.length; i++) {
+        for (let i = dataStart; i < rows.length; i++) {
           const row = rows[i];
           if (!Array.isArray(row)) continue;
-
           const nameVal = String(row[nameIdx] || '');
           const w1 = Number(String(row[w1Idx] || '0').replace(/,/g, '')) || 0;
           const w2 = Number(String(row[w2Idx] || '0').replace(/,/g, '')) || 0;
-          const w3 = Number(String(row[w3Idx] || '0').replace(/,/g, '')) || 0;
-          if (w1 === 0 && w2 === 0 && w3 === 0) continue;
+          if (w1 === 0 && w2 === 0) continue;
 
-          // 상품명 안 마지막 괄호 () 안의 코드 추출
-          const allMatches = [...nameVal.matchAll(/\(([^)]+)\)/g)];
-          const bc = allMatches.length > 0 ? cleanStr(allMatches[allMatches.length - 1][1]) : '';
+          // 마지막 () 안 바코드 추출
+          const allM = [...nameVal.matchAll(/\(([^)]+)\)/g)];
+          const bc = allM.length > 0 ? cleanStr(allM[allM.length - 1][1]) : '';
           if (!bc || bc.length < 4) { unmatched++; continue; }
 
           const product = findProductByBarcode(bc, allProducts);
@@ -877,29 +951,83 @@ function App() {
             if (!orderMap[key]) orderMap[key] = { w1: 0, w2: 0, w3: 0 };
             orderMap[key].w1 += w1;
             orderMap[key].w2 += w2;
-            orderMap[key].w3 += w3;
             matched++;
-          } else {
-            unmatched++;
-          }
+          } else { unmatched++; }
         }
 
-        const updates = [];
-        for (const [key, orders] of Object.entries(orderMap)) {
-          const [b, c] = key.split('|||');
-          const tbl = groups.some(g => g.code === c && g.brand === b) ? 'groups' : 'master_products';
-          updates.push(supabase.from(tbl).update({ order_w1: orders.w1, order_w2: orders.w2, order_w3: orders.w3 }).eq('code', c).eq('brand', b));
-        }
-        await Promise.all(updates);
-        alert(`🛒 발주 매핑 완료!\n✅ 매핑된 행: ${matched}건\n✅ 갱신 품번: ${updates.length}건\n❌ 미매핑: ${unmatched}건`);
+        const cnt = await applyOrderUpdate(orderMap);
+        alert(`🛒 몽벨 발주 매핑 완료!\n✅ 매핑된 행: ${matched}건\n✅ 갱신 품번: ${cnt}건\n❌ 미매핑: ${unmatched}건`);
         fetchData();
-      } catch (err) {
-        console.error(err);
-        alert("❌ 발주 엑셀 처리 중 오류가 발생했습니다.");
-      }
+      } catch (err) { console.error(err); alert("❌ 발주 엑셀 처리 중 오류가 발생했습니다."); }
     };
     reader.readAsBinaryString(file);
-    e.target.value = null; 
+  };
+
+  // 라온팩토리 발주: 순종평상품명의 _ 뒤 스타일코드, 수량→w1 합산
+  const handleRaonOrderExcelUpload = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    e.target.value = null;
+    const reader = new FileReader();
+    reader.onload = async (ev) => {
+      try {
+        const wb = XLSX.read(ev.target.result, { type: 'binary' });
+        const sheet = wb.Sheets[wb.SheetNames[0]];
+        const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
+
+        let nameIdx = -1, qtyIdx = -1, dataStart = 0;
+        for (let i = 0; i < Math.min(10, rows.length); i++) {
+          const row = rows[i];
+          if (!Array.isArray(row)) continue;
+          const fName = row.findIndex(c => cleanStr(c).includes('상품명') || cleanStr(c).includes('순종평'));
+          const fQty  = row.findIndex(c => cleanStr(c) === '수량');
+          if (fName !== -1 && fQty !== -1) {
+            nameIdx = fName; qtyIdx = fQty; dataStart = i + 1; break;
+          }
+        }
+        if (nameIdx === -1) { nameIdx = 6; qtyIdx = 7; dataStart = 1; }
+
+        const allProducts = [...masterProducts, ...groups];
+        const orderMap = {};
+        let matched = 0, unmatched = 0;
+
+        for (let i = dataStart; i < rows.length; i++) {
+          const row = rows[i];
+          if (!Array.isArray(row)) continue;
+          const nameVal = String(row[nameIdx] || '');
+          const qty = Number(String(row[qtyIdx] || '0').replace(/,/g, '')) || 0;
+          if (qty === 0) continue;
+
+          // _ 뒤의 스타일코드 추출: "라온래더_PE3HFURL73 [M/GREY]" → PE3HFURL73
+          let bc = '';
+          const uIdx = nameVal.lastIndexOf('_');
+          if (uIdx !== -1) {
+            const after = nameVal.slice(uIdx + 1).trim();
+            const m = after.match(/^([A-Z0-9]+)/i);
+            bc = m ? cleanStr(m[1]) : '';
+          }
+          // fallback: 마지막 () 안 코드
+          if (!bc || bc.length < 4) {
+            const allM = [...nameVal.matchAll(/\(([^)]+)\)/g)];
+            bc = allM.length > 0 ? cleanStr(allM[allM.length - 1][1]) : '';
+          }
+          if (!bc || bc.length < 4) { unmatched++; continue; }
+
+          const product = findProductByBarcode(bc, allProducts);
+          if (product) {
+            const key = makeKey(product.brand, product.code);
+            if (!orderMap[key]) orderMap[key] = { w1: 0, w2: 0, w3: 0 };
+            orderMap[key].w1 += qty;
+            matched++;
+          } else { unmatched++; }
+        }
+
+        const cnt = await applyOrderUpdate(orderMap);
+        alert(`🛒 라온팩토리 발주 매핑 완료!\n✅ 매핑된 행: ${matched}건\n✅ 갱신 품번: ${cnt}건\n❌ 미매핑: ${unmatched}건`);
+        fetchData();
+      } catch (err) { console.error(err); alert("❌ 발주 엑셀 처리 중 오류가 발생했습니다."); }
+    };
+    reader.readAsBinaryString(file);
   };
 
   const downloadExcelTemplate = () => {
@@ -1321,17 +1449,30 @@ function App() {
                 <div style={{width:'1px', background:'#ddd', margin:'0 2px'}}></div>
                 {/* 💡 3번 재고발주 메뉴 엑셀 다운로드 버튼 */}
                 <button onClick={downloadListExcel} style={{padding:'6px 10px', background:'#27ae60', color:'#fff', border:'none', borderRadius:'4px', fontSize:'11px', cursor:'pointer', fontWeight:'bold'}}>📄 {selectedCodes.length > 0 ? "선택 엑셀" : "전체 엑셀"}</button>
-                <label style={{fontSize:'11px', display:'flex', alignItems:'center', gap:'5px', cursor:'pointer', background:'#e8f8f5', padding:'6px 12px', borderRadius:'6px', border:'1px solid #1abc9c', color:'#16a085', fontWeight:'bold'}}>
-                  📦 온라인재고 (사전생성)
-                  <input type="file" onChange={handleInventoryExcelUpload} style={{display:'none'}} />
+                <div style={{width:'1px', background:'#ddd', margin:'0 2px'}}></div>
+                <span style={{fontSize:'10px', color:'#999', fontWeight:'bold'}}>온라인재고:</span>
+                <label style={{fontSize:'11px', display:'flex', alignItems:'center', gap:'4px', cursor:'pointer', background:'#e8f8f5', padding:'5px 10px', borderRadius:'6px', border:'1px solid #1abc9c', color:'#16a085', fontWeight:'bold'}}>
+                  📦 몽벨
+                  <input type="file" accept=".xlsx,.xls" onChange={handleMWInventoryExcelUpload} style={{display:'none'}} />
                 </label>
-                <label style={{fontSize:'11px', display:'flex', alignItems:'center', gap:'5px', cursor:'pointer', background:'#f4ecf7', padding:'6px 12px', borderRadius:'6px', border:'1px solid #8e44ad', color:'#8e44ad', fontWeight:'bold'}}>
-                  🏢 본사재고 (매핑업뎃)
-                  <input type="file" onChange={handleHqStockExcelUpload} style={{display:'none'}} />
+                <label style={{fontSize:'11px', display:'flex', alignItems:'center', gap:'4px', cursor:'pointer', background:'#e8f8f5', padding:'5px 10px', borderRadius:'6px', border:'1px solid #1abc9c', color:'#16a085', fontWeight:'bold'}}>
+                  📦 라온팩토리
+                  <input type="file" accept=".xlsx,.xls" onChange={handleRaonInventoryExcelUpload} style={{display:'none'}} />
                 </label>
-                <label style={{fontSize:'11px', display:'flex', alignItems:'center', gap:'5px', cursor:'pointer', background:'#fef5e7', padding:'6px 12px', borderRadius:'6px', border:'1px solid #e67e22', color:'#d35400', fontWeight:'bold'}}>
-                  🛒 발주수량 (매핑업뎃)
-                  <input type="file" onChange={handleOrderExcelUpload} style={{display:'none'}} />
+                <div style={{width:'1px', background:'#ddd', margin:'0 2px'}}></div>
+                <label style={{fontSize:'11px', display:'flex', alignItems:'center', gap:'4px', cursor:'pointer', background:'#f4ecf7', padding:'5px 10px', borderRadius:'6px', border:'1px solid #8e44ad', color:'#8e44ad', fontWeight:'bold'}}>
+                  🏢 본사재고
+                  <input type="file" accept=".xlsx,.xls" onChange={handleHqStockExcelUpload} style={{display:'none'}} />
+                </label>
+                <div style={{width:'1px', background:'#ddd', margin:'0 2px'}}></div>
+                <span style={{fontSize:'10px', color:'#999', fontWeight:'bold'}}>발주:</span>
+                <label style={{fontSize:'11px', display:'flex', alignItems:'center', gap:'4px', cursor:'pointer', background:'#fef5e7', padding:'5px 10px', borderRadius:'6px', border:'1px solid #e67e22', color:'#d35400', fontWeight:'bold'}}>
+                  🛒 몽벨
+                  <input type="file" accept=".xlsx,.xls" onChange={handleMWOrderExcelUpload} style={{display:'none'}} />
+                </label>
+                <label style={{fontSize:'11px', display:'flex', alignItems:'center', gap:'4px', cursor:'pointer', background:'#fef5e7', padding:'5px 10px', borderRadius:'6px', border:'1px solid #e67e22', color:'#d35400', fontWeight:'bold'}}>
+                  🛒 라온팩토리
+                  <input type="file" accept=".xlsx,.xls" onChange={handleRaonOrderExcelUpload} style={{display:'none'}} />
                 </label>
               </div>
             </div>
