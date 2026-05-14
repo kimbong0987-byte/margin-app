@@ -59,37 +59,49 @@ function App() {
   const [marginFilter, setMarginFilter] = useState({ min: '', max: '' });
   const [quickFilter, setQuickFilter] = useState('');
 
-  // 수수료율 설정 (localStorage 저장)
-  const [feeRate, setFeeRate] = useState(() => Number(localStorage.getItem('feeRate') || 18));
-  const [feeRateInput, setFeeRateInput] = useState(() => String(localStorage.getItem('feeRate') || '18'));
+  // 수수료율 / 고정비 설정 (Supabase 저장)
+  const [feeRate, setFeeRate] = useState(18);
+  const [feeRateInput, setFeeRateInput] = useState('18');
+  const [fixedCost, setFixedCost] = useState(5000);
+  const [fixedCostInput, setFixedCostInput] = useState('5000');
 
-  const handleFeeRateChange = (val) => {
+  const fetchSettings = async () => {
+    const { data } = await supabase.from('settings').select('*');
+    if (data) {
+      const fr = data.find(d => d.key === 'feeRate');
+      const fc = data.find(d => d.key === 'fixedCost');
+      if (fr) { setFeeRate(Number(fr.value)); setFeeRateInput(fr.value); }
+      if (fc) { setFixedCost(Number(fc.value)); setFixedCostInput(fc.value); }
+    }
+  };
+
+  const handleFeeRateChange = async (val) => {
     setFeeRateInput(val);
     const n = Number(val);
     if (!isNaN(n) && n >= 0 && n <= 100) {
       setFeeRate(n);
-      localStorage.setItem('feeRate', n);
+      await supabase.from('settings').update({ value: String(n) }).eq('key', 'feeRate');
     }
   };
 
-  // 고정비 설정 (localStorage 저장)
-  const [fixedCost, setFixedCost] = useState(() => Number(localStorage.getItem('fixedCost') ?? 5000));
-  const [fixedCostInput, setFixedCostInput] = useState(() => String(localStorage.getItem('fixedCost') ?? '5000'));
-
-  const handleFixedCostChange = (val) => {
+  const handleFixedCostChange = async (val) => {
     setFixedCostInput(val);
     const n = Number(val);
     if (!isNaN(n) && n >= 0) {
       setFixedCost(n);
-      localStorage.setItem('fixedCost', n);
+      await supabase.from('settings').update({ value: String(n) }).eq('key', 'fixedCost');
     }
   };
 
   // ==========================================
   // 2. 초기 데이터 로드
   // ==========================================
-  useEffect(() => { 
-    fetchData(); 
+  useEffect(() => {
+    fetchSettings();
+  }, []);
+
+  useEffect(() => {
+    fetchData();
     const handleResize = () => setIsMobile(window.innerWidth <= 768);
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
