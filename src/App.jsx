@@ -772,7 +772,9 @@ function App() {
     reader.readAsBinaryString(file);
   };
 
-  // 몽벨 온라인재고: 바코드 + 현재고(가용) 컬럼 (합재고는 수식이라 0 반환됨)
+  // 몽벨 온라인재고: C열(상품코드) 직접 매핑, X열(합재고) 합산
+  // 헤더구조: row0=대분류, row1=소분류, row2~=데이터
+  // C(2)=상품코드, L(11)=바코드, M(12)=모델NO, P(15)=옵션별칭1, X(23)=합재고
   const handleMWInventoryExcelUpload = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
@@ -784,36 +786,24 @@ function App() {
         const sheet = wb.Sheets[wb.SheetNames[0]];
         const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
 
-        let bcIdx = -1, stockIdx = -1, codeIdx = -1, dataStart = -1;
-        for (let i = 0; i < Math.min(10, rows.length); i++) {
-          const r0 = rows[i];
-          if (!Array.isArray(r0)) continue;
-          const fBc = r0.findIndex(c => cleanStr(c) === '바코드');
-          if (fBc === -1) continue;
-
-          bcIdx = fBc;
-          codeIdx = r0.findIndex(c => cleanStr(c) === '상품코드');
-
-          // 2행 헤더 구조: row i = 대분류, row i+1 = 소분류
-          // 현재고(가용) 찾기: 대분류에서 '현재고' 위치 → 소분류에서 '가용' 찾기
-          const r1 = rows[i + 1] || [];
-          const fHq = r0.findIndex(c => cleanStr(c).includes('현재고'));
-          if (fHq !== -1) {
-            for (let j = fHq; j < Math.min(fHq + 6, r0.length); j++) {
-              if (cleanStr(r1[j] || '').includes('가용')) { stockIdx = j; break; }
-            }
+        // 헤더 탐색: '상품코드' 있는 행 찾기 (보통 row0)
+        let codeIdx = 2, bcIdx = 11, modelIdx = 12, stockIdx = 23, dataStart = 2;
+        for (let i = 0; i < Math.min(5, rows.length); i++) {
+          const r = rows[i];
+          if (!Array.isArray(r)) continue;
+          const fCode = r.findIndex(c => cleanStr(c) === '상품코드');
+          if (fCode !== -1) {
+            codeIdx  = fCode;
+            bcIdx    = r.findIndex(c => cleanStr(c) === '바코드');
+            modelIdx = r.findIndex(c => cleanStr(c) === '모델NO');
+            stockIdx = r.findIndex(c => cleanStr(c) === '합재고');
+            if (bcIdx    === -1) bcIdx    = 11;
+            if (modelIdx === -1) modelIdx = 12;
+            if (stockIdx === -1) stockIdx = 23;
+            dataStart = i + 2; // 대분류+소분류 2행 건너뜀
+            break;
           }
-          // 단일 행에 '현재고(가용)' 또는 '현재고가용' 통합 헤더 있을 때
-          if (stockIdx === -1) stockIdx = r0.findIndex(c => cleanStr(c).includes('현재고') && cleanStr(c).includes('가용'));
-          // 그래도 없으면 합재고 (수식이지만 캐시값 있을 수 있음)
-          if (stockIdx === -1) stockIdx = r0.findIndex(c => cleanStr(c).includes('합재고'));
-          // 최후 fallback: 6번 컬럼
-          if (stockIdx === -1) stockIdx = 6;
-
-          dataStart = i + 2; // 대분류+소분류 2행 헤더 이후
-          break;
         }
-        if (bcIdx === -1) return alert("❌ '바코드' 컬럼을 찾지 못했습니다.");
 
         const allProducts = [...masterProducts, ...groups];
         const stockMap = {}, barcodeMap = {};
@@ -822,23 +812,37 @@ function App() {
         for (let i = dataStart; i < rows.length; i++) {
           const row = rows[i];
           if (!Array.isArray(row)) continue;
-          const bc  = cleanStr(row[bcIdx]);
-          const rawQty = row[stockIdx];
-          // 수식 문자열(=IF...)은 0으로 처리하지 않고 건너뜀 방지: Number 변환
-          const qty = typeof rawQty === 'number' ? rawQty : Number(String(rawQty || '0').replace(/[,=]/g, '')) || 0;
-          if (!bc || bc.length < 4) continue;
 
-          let product = findProductByBarcode(bc, allProducts);
-          // 바코드 매핑 실패 시 상품코드 숫자 fallback
-          if (!product && codeIdx !== -1) {
-            const numCode = cleanStr(row[codeIdx]);
-            if (numCode) product = allProducts.find(p => cleanStr(p.code) === numCode);
+          // X열 합재고 (수식 캐시값 우선, 문자열이면 파싱)
+          const rawQty = row[stockIdx];
+          const qty = typeof rawQty === 'number' ? rawQty
+                    : Number(String(rawQty || '0').replace(/[,=]/g, '')) || 0;
+
+          const numCode = String(row[codeIdx] || '').trim();
+          const barcode = cleanStr(row[bcIdx]  || '');
+          const modelNo = cleanStr(row[modelIdx] || '');
+
+          if (!numCode && !barcode) continue;
+
+          // 1순위: C열 상품코드 → DB product.code 직접 매핑
+          let product = allProducts.find(p => String(p.code) === numCode);
+
+          // 2순위: L열 바코드 뒤 3자리(사이즈) 제거 → 자식 style_no 매칭
+          if (!product && barcode.length > 3) {
+            const styleNoChild = barcode.slice(0, -3); // 사이즈 3자리 제거
+            product = allProducts.find(p => p.style_no && codesMatch(p.style_no, styleNoChild));
           }
+
+          // 3순위: M열 모델NO → 부모 style_no 매칭
+          if (!product && modelNo) {
+            product = allProducts.find(p => p.style_no && codesMatch(p.style_no, modelNo));
+          }
+
           if (product) {
             const key = makeKey(product.brand, product.code);
             stockMap[key] = (stockMap[key] || 0) + qty;
             if (!barcodeMap[key]) barcodeMap[key] = new Set();
-            barcodeMap[key].add(bc);
+            if (barcode) barcodeMap[key].add(barcode);
             matched++;
           } else { unmatched++; }
         }
@@ -851,6 +855,7 @@ function App() {
     reader.readAsBinaryString(file);
   };
 
+  // 본사재고양식: 2행 헤더, C열(상품바코드) 뒤 3자리 사이즈 제거 → style_no 매칭, N열(실재고) 합산
   const handleHqStockExcelUpload = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
@@ -860,52 +865,48 @@ function App() {
       try {
         const workbook = XLSX.read(ev.target.result, { type: 'binary' });
         const sheet = workbook.Sheets[workbook.SheetNames[0]];
-        // header:1 로 배열 파싱해서 헤더 행 직접 찾기
         const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
 
-        // 헤더 행에서 '상품바코드'와 재고수량 컬럼 위치 탐색
-        let headerRowIndex = -1;
-        let bcIdx = -1, qtyIdx = -1;
-
-        for (let i = 0; i < Math.min(20, rows.length); i++) {
-          const row = rows[i];
-          if (!Array.isArray(row)) continue;
-          const fBc  = row.findIndex(c => cleanStr(c).includes('상품바코드'));
-          // 재고수량 컬럼: '재고수' 또는 컬럼 N(인덱스13) 시도
-          const fQty = row.findIndex(c => cleanStr(c).includes('재고수') || cleanStr(c).includes('수량'));
+        // 2행 헤더 구조: row0=대분류, row1=소분류(품번/상품바코드/실재고 등)
+        let bcIdx = 2, qtyIdx = 13, dataStart = 2;
+        for (let i = 0; i < Math.min(5, rows.length); i++) {
+          const r = rows[i];
+          if (!Array.isArray(r)) continue;
+          const fBc  = r.findIndex(c => cleanStr(c).includes('상품바코드'));
+          const fQty = r.findIndex(c => cleanStr(c) === '실재고');
           if (fBc !== -1) {
-            headerRowIndex = i;
-            bcIdx = fBc;
-            qtyIdx = fQty !== -1 ? fQty : 13; // fallback: 14번째 열
+            bcIdx  = fBc;
+            qtyIdx = fQty !== -1 ? fQty : 13;
+            dataStart = i + 1;
             break;
           }
-        }
-        // 헤더를 못 찾으면 고정 컬럼(C=2, N=13) 사용
-        if (headerRowIndex === -1) {
-          headerRowIndex = 0;
-          bcIdx = 2;
-          qtyIdx = 13;
         }
 
         const allProducts = [...masterProducts, ...groups];
         const hqMap = {};
         let matched = 0, unmatched = 0;
 
-        for (let i = headerRowIndex + 1; i < rows.length; i++) {
+        for (let i = dataStart; i < rows.length; i++) {
           const row = rows[i];
           if (!Array.isArray(row)) continue;
-          const bc  = cleanStr(row[bcIdx]);
-          const qty = Number(String(row[qtyIdx] || '0').replace(/,/g, '')) || 0;
-          if (!bc || bc.length < 4) continue;
+          const fullBarcode = cleanStr(row[bcIdx]); // e.g. EB3IFMJP51CH095
+          const qty = typeof row[qtyIdx] === 'number' ? row[qtyIdx]
+                    : Number(String(row[qtyIdx] || '0').replace(/,/g, '')) || 0;
+          if (!fullBarcode || fullBarcode.length < 4) continue;
 
-          const product = findProductByBarcode(bc, allProducts);
+          // 뒤 3자리 사이즈 제거 → 색상코드까지의 style_no
+          const styleNoChild = fullBarcode.length > 3 ? fullBarcode.slice(0, -3) : fullBarcode;
+
+          // 1순위: 바코드 뒤 3자리 제거 → style_no codesMatch
+          let product = allProducts.find(p => p.style_no && codesMatch(p.style_no, styleNoChild));
+          // 2순위: 전체 바코드로 fallback (normalizeBarcode 활용)
+          if (!product) product = findProductByBarcode(fullBarcode, allProducts);
+
           if (product) {
             const key = makeKey(product.brand, product.code);
             hqMap[key] = (hqMap[key] || 0) + qty;
             matched++;
-          } else {
-            unmatched++;
-          }
+          } else { unmatched++; }
         }
 
         const updates = [];
@@ -951,7 +952,8 @@ function App() {
     await Promise.all(resets);
   };
 
-  // 몽벨 발주: 상품명 마지막() 바코드, 1주발주합계→w1, 2주발주합계→w2, 3주발주합계→w3
+  // 몽벨 발주: A열 상품명 마지막() 바코드→뒤3자리(사이즈)제거→자식style_no 매칭
+  // K(10)=1주발주합계, L(11)=2주발주합계, M(12)=3주발주합계
   const handleMWOrderExcelUpload = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
@@ -963,26 +965,24 @@ function App() {
         const sheet = wb.Sheets[wb.SheetNames[0]];
         const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
 
-        let nameIdx = -1, w1Idx = -1, w2Idx = -1, w3Idx = -1, dataStart = 1;
-        for (let i = 0; i < Math.min(10, rows.length); i++) {
+        // 헤더 탐색: '상품명' 있는 행 (보통 row0)
+        let nameIdx = 0, w1Idx = 10, w2Idx = 11, w3Idx = 12, dataStart = 1;
+        for (let i = 0; i < Math.min(5, rows.length); i++) {
           const row = rows[i];
           if (!Array.isArray(row)) continue;
           const fName = row.findIndex(c => cleanStr(c).includes('상품명'));
           if (fName !== -1) {
             nameIdx = fName;
-            // 실제 컬럼명: 1주발주합계, 2주발주합계, 3주발주합계
             w1Idx = row.findIndex(c => cleanStr(c).includes('1주발주합계'));
             w2Idx = row.findIndex(c => cleanStr(c).includes('2주발주합계'));
             w3Idx = row.findIndex(c => cleanStr(c).includes('3주발주합계'));
+            if (w1Idx === -1) w1Idx = 10;
+            if (w2Idx === -1) w2Idx = 11;
+            if (w3Idx === -1) w3Idx = 12;
             dataStart = i + 1;
             break;
           }
         }
-        // fallback: 실제 파일 기준 고정 인덱스 (상품명=0, 1주=10, 2주=11, 3주=12)
-        if (nameIdx === -1) nameIdx = 0;
-        if (w1Idx === -1) w1Idx = 10;
-        if (w2Idx === -1) w2Idx = 11;
-        if (w3Idx === -1) w3Idx = 12;
 
         const allProducts = [...masterProducts, ...groups];
         const orderMap = {};
@@ -992,17 +992,25 @@ function App() {
           const row = rows[i];
           if (!Array.isArray(row)) continue;
           const nameVal = String(row[nameIdx] || '');
-          const w1 = Number(String(row[w1Idx] || '0').replace(/,/g, '')) || 0;
-          const w2 = Number(String(row[w2Idx] || '0').replace(/,/g, '')) || 0;
-          const w3 = Number(String(row[w3Idx] || '0').replace(/,/g, '')) || 0;
+          const w1 = typeof row[w1Idx] === 'number' ? row[w1Idx] : Number(String(row[w1Idx]||'0').replace(/,/g,''))||0;
+          const w2 = typeof row[w2Idx] === 'number' ? row[w2Idx] : Number(String(row[w2Idx]||'0').replace(/,/g,''))||0;
+          const w3 = typeof row[w3Idx] === 'number' ? row[w3Idx] : Number(String(row[w3Idx]||'0').replace(/,/g,''))||0;
           if (w1 === 0 && w2 === 0 && w3 === 0) continue;
 
-          // 상품명 마지막 () 안 바코드 추출: "0050) 테크페이스(MW3GAWJW212RE090)"
+          // A열 상품명 마지막 () 안 바코드 추출
+          // "0001) 2레이어패딩자켓(배)(MW3FAMIJ80NA095)" → MW3FAMIJ80NA095
           const allM = [...nameVal.matchAll(/\(([^)]+)\)/g)];
           const bc = allM.length > 0 ? cleanStr(allM[allM.length - 1][1]) : '';
           if (!bc || bc.length < 4) { unmatched++; continue; }
 
-          const product = findProductByBarcode(bc, allProducts);
+          // 뒤 3자리 사이즈 제거 → 자식 style_no (e.g. MW3FAMIJ80NA095 → MW3FAMIJ80NA)
+          const styleNoChild = bc.length > 3 ? bc.slice(0, -3) : bc;
+
+          // 1순위: 뒤 3자리 제거한 코드 → style_no codesMatch (리오더 3↔7 자동처리)
+          let product = allProducts.find(p => p.style_no && codesMatch(p.style_no, styleNoChild));
+          // 2순위: 전체 바코드로 fallback
+          if (!product) product = findProductByBarcode(bc, allProducts);
+
           if (product) {
             const key = makeKey(product.brand, product.code);
             if (!orderMap[key]) orderMap[key] = { w1: 0, w2: 0, w3: 0 };
@@ -1013,7 +1021,7 @@ function App() {
           } else { unmatched++; }
         }
 
-        await resetOrdersByBrandFilter(true); // 몽벨 발주 전체 초기화
+        await resetOrdersByBrandFilter(true); // 몽벨 발주 전체 초기화 후 적용
         const cnt = await applyOrderUpdate(orderMap);
         alert(`🛒 몽벨 발주 매핑 완료!\n✅ 매핑된 행: ${matched}건\n✅ 갱신 품번: ${cnt}건\n❌ 미매핑: ${unmatched}건`);
         fetchData();
