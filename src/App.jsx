@@ -1100,9 +1100,9 @@ function App() {
     cod: { w: 100, l: 246 },
     cat: { w: 60,  l: 346 },
     sty: { w: 120, l: 406 },
-    nam: { w: 300, l: 526 },
-    cst: { w: 60,  l: 826 },
-    tag: { w: 65,  l: 886 },
+    nam: { w: 400, l: 526 },
+    cst: { w: 60,  l: 926 },
+    tag: { w: 65,  l: 986 },
   };
 
   const fX = (l, isHeader = false) => {
