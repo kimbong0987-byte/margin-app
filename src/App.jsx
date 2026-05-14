@@ -1262,10 +1262,15 @@ function App() {
                   options={(groups || []).map(g => ({ label: `[${g.brand || ''}] [${g.type}] [${g.code}] ${g.name}`, data: g }))} 
                   onChange={(opt) => {
                     if(opt && opt.data) {
+                      const grp = opt.data;
+                      // 삭제된 단품은 제외하고 현재 masterProducts에 존재하는 것만 로드
+                      const validChildren = (grp.children || [])
+                        .map(c => masterProducts.find(p => p.brand === grp.brand && p.code === c.code))
+                        .filter(Boolean);
                       setGroupInput({
-                        brand: opt.data.brand || '', season: opt.data.season || '', type: opt.data.type || '묶음', category: opt.data.category || '', 
-                        groupCode: opt.data.code || '', styleNo: opt.data.style_no || '', groupName: opt.data.name || '', 
-                        cost: opt.data.cost || '', tagPrice: opt.data.tag_price || '', children: opt.data.children || []
+                        brand: grp.brand || '', season: grp.season || '', type: grp.type || '묶음', category: grp.category || '',
+                        groupCode: grp.code || '', styleNo: grp.style_no || '', groupName: grp.name || '',
+                        cost: grp.cost || '', tagPrice: grp.tag_price || '', children: validChildren
                       });
                     }
                   }} 
@@ -1299,8 +1304,13 @@ function App() {
                        const pStyle = String(p?.style_no || '').toLowerCase();
                        return (gName && (pName.includes(gName) || pStyle.includes(gName))) || (gStyle && (pStyle.includes(gStyle) || pName.includes(gStyle)));
                      }).map(p => ({ label: `[${p?.brand || ''}] [${p?.code || ''}] ${p?.style_no || ''} - ${p?.name || ''}`, value: makeKey(p?.brand, p?.code), data: p }))} 
-                     value={(groupInput?.children || []).map(c => ({ label: c?.name || '', value: makeKey(groupInput.brand, c?.code), data: c }))} 
-                     onChange={(opts) => setGroupInput({...groupInput, children: opts ? opts.map(o => o.data) : []})} 
+                     value={(groupInput?.children || []).map(c => {
+                       // masterProducts에서 전체 객체 찾기 (그래야 options와 key가 일치)
+                       const full = masterProducts.find(p => p.code === c.code && p.brand === (c.brand || groupInput.brand));
+                       const item = full || c;
+                       return { label: `[${item.brand||groupInput.brand}] [${item.code}] ${item.name||''}`, value: makeKey(item.brand||groupInput.brand, item.code), data: item };
+                     })}
+                     onChange={(opts) => setGroupInput({...groupInput, children: opts ? opts.map(o => o.data) : []})}
                    />
                    <div style={{ marginTop: '10px', maxHeight: '120px', overflowY: 'auto', fontSize:'11px', background:'#fff', border:'1px solid #eee', borderRadius:'4px' }}>
                       {groupInput.children.length === 0 && <div style={{padding:'10px', color:'#999', textAlign:'center'}}>선택 상품 없음.</div>}
