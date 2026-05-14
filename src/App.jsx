@@ -25,17 +25,22 @@ const normalizeBarcode = (code) => {
   return s;
 };
 
-// 💡 두 코드가 동일 상품인지 비교 (리오더 숫자 1자리 확장 포함)
+// 💡 두 코드가 동일 상품인지 비교 (리오더 숫자 확장 + 브랜드 접두사 포함 케이스)
 const codesMatch = (a, b) => {
   if (!a || !b) return false;
   const na = normalizeBarcode(a);
   const nb = normalizeBarcode(b);
   if (!na || !nb) return false;
   if (na === nb) return true;
+  // 리오더: 숫자 1자리만 확장된 경우 (예: MWEBWPL84 ↔ MWEBWPL841)
   const shorter = na.length <= nb.length ? na : nb;
   const longer  = na.length <= nb.length ? nb : na;
-  // 리오더: 숫자 1자리만 확장된 경우 (예: 84→841)
-  return longer.startsWith(shorter) && (longer.length - shorter.length) === 1 && /\d$/.test(longer);
+  if (longer.startsWith(shorter) && (longer.length - shorter.length) === 1 && /\d$/.test(longer)) return true;
+  // 브랜드 접두사 포함 케이스: style_no가 정규화된 바코드 안에 포함될 때
+  // 예) style_no=GAWJW212, normalized_barcode=MWGAWJW212 → 포함 ✓
+  if (nb.length >= 5 && na.includes(nb)) return true;
+  if (na.length >= 5 && nb.includes(na)) return true;
+  return false;
 };
 
 // 💡 바코드/스타일코드로 DB 상품 검색 (style_no → barcode목록 → code 순서)
@@ -901,7 +906,7 @@ function App() {
     return updates.length;
   };
 
-  // 몽벨 발주: 제품명 마지막 () 안 바코드, 주문수량①(L)→w1, 주문수량②(R)→w2
+  // 몽벨 발주: 상품명 마지막() 바코드, 1주발주합계→w1, 2주발주합계→w2, 3주발주합계→w3
   const handleMWOrderExcelUpload = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
@@ -913,20 +918,26 @@ function App() {
         const sheet = wb.Sheets[wb.SheetNames[0]];
         const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
 
-        let nameIdx = -1, w1Idx = -1, w2Idx = -1, dataStart = 0;
+        let nameIdx = -1, w1Idx = -1, w2Idx = -1, w3Idx = -1, dataStart = 1;
         for (let i = 0; i < Math.min(10, rows.length); i++) {
           const row = rows[i];
           if (!Array.isArray(row)) continue;
-          const fName = row.findIndex(c => cleanStr(c).includes('제품명') || cleanStr(c).includes('상품명'));
+          const fName = row.findIndex(c => cleanStr(c).includes('상품명'));
           if (fName !== -1) {
             nameIdx = fName;
-            w1Idx = row.findIndex(c => cleanStr(c).includes('주문수량') && (cleanStr(c).includes('①') || cleanStr(c).includes('L') || cleanStr(c).includes('1')));
-            w2Idx = row.findIndex(c => cleanStr(c).includes('주문수량') && (cleanStr(c).includes('②') || cleanStr(c).includes('R') || cleanStr(c).includes('2')));
+            // 실제 컬럼명: 1주발주합계, 2주발주합계, 3주발주합계
+            w1Idx = row.findIndex(c => cleanStr(c).includes('1주발주합계'));
+            w2Idx = row.findIndex(c => cleanStr(c).includes('2주발주합계'));
+            w3Idx = row.findIndex(c => cleanStr(c).includes('3주발주합계'));
             dataStart = i + 1;
             break;
           }
         }
-        if (nameIdx === -1) { nameIdx = 0; w1Idx = 2; w2Idx = 3; dataStart = 1; }
+        // fallback: 실제 파일 기준 고정 인덱스 (상품명=0, 1주=10, 2주=11, 3주=12)
+        if (nameIdx === -1) nameIdx = 0;
+        if (w1Idx === -1) w1Idx = 10;
+        if (w2Idx === -1) w2Idx = 11;
+        if (w3Idx === -1) w3Idx = 12;
 
         const allProducts = [...masterProducts, ...groups];
         const orderMap = {};
@@ -938,9 +949,10 @@ function App() {
           const nameVal = String(row[nameIdx] || '');
           const w1 = Number(String(row[w1Idx] || '0').replace(/,/g, '')) || 0;
           const w2 = Number(String(row[w2Idx] || '0').replace(/,/g, '')) || 0;
-          if (w1 === 0 && w2 === 0) continue;
+          const w3 = Number(String(row[w3Idx] || '0').replace(/,/g, '')) || 0;
+          if (w1 === 0 && w2 === 0 && w3 === 0) continue;
 
-          // 마지막 () 안 바코드 추출
+          // 상품명 마지막 () 안 바코드 추출: "0050) 테크페이스(MW3GAWJW212RE090)"
           const allM = [...nameVal.matchAll(/\(([^)]+)\)/g)];
           const bc = allM.length > 0 ? cleanStr(allM[allM.length - 1][1]) : '';
           if (!bc || bc.length < 4) { unmatched++; continue; }
@@ -951,6 +963,7 @@ function App() {
             if (!orderMap[key]) orderMap[key] = { w1: 0, w2: 0, w3: 0 };
             orderMap[key].w1 += w1;
             orderMap[key].w2 += w2;
+            orderMap[key].w3 += w3;
             matched++;
           } else { unmatched++; }
         }
