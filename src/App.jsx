@@ -59,9 +59,8 @@ function App() {
   const [marginFilter, setMarginFilter] = useState({ min: '', max: '' });
   const [quickFilter, setQuickFilter] = useState('');
 
-  // 가격 스냅샷 (앱 첫 로드 시 저장 → 이전값 기준으로 사용)
-  const [priceSnapshot, setPriceSnapshot] = useState({});
-  const isSnapshotTaken = React.useRef(false);
+  // 가격 변경 전 값 기록 (변경 시점마다 갱신)
+  const [localPrev, setLocalPrev] = useState({});
 
   // 수수료율 / 고정비 설정 (Supabase 저장)
   const [feeRate, setFeeRate] = useState(18);
@@ -124,19 +123,6 @@ function App() {
       if (seaData) setSeasons(seaData.map(s => s.name));
       if (prodData) setMasterProducts(prodData);
       if (groupData) setGroups(groupData);
-
-      // 첫 로드 시에만 가격 스냅샷 저장
-      if (!isSnapshotTaken.current && prodData && groupData) {
-        const snap = {};
-        [...prodData, ...groupData].forEach(p => {
-          snap[makeKey(p.brand, p.code)] = {
-            price_sale: p.price_sale, price_naver: p.price_naver,
-            price_coupang: p.price_coupang, price_rocket: p.price_rocket, price_gold: p.price_gold,
-          };
-        });
-        setPriceSnapshot(snap);
-        isSnapshotTaken.current = true;
-      }
     } catch (e) { 
       console.error("데이터 로드 실패:", e); 
     }
@@ -303,14 +289,14 @@ function App() {
       const discSale = tag === 0 ? 0 : Math.round((1 - (sale / tag)) * 100);
       const margin = (sale - fee) - cost - fixedCost;
 
-      // 스냅샷 기반 이전값 (앱 첫 로드 시 저장된 값)
-      const snap = priceSnapshot[makeKey(item.brand, item.code)] || {};
-      const prevSale     = Number(snap.price_sale     ?? item.price_sale     ?? 0);
-      const prevNaver    = Number(snap.price_naver    ?? item.price_naver    ?? 0);
-      const prevCoupang  = Number(snap.price_coupang  ?? item.price_coupang  ?? 0);
-      const prevRocket   = Number(snap.price_rocket   ?? item.price_rocket   ?? 0);
-      const prevGold     = Number(snap.price_gold     ?? item.price_gold     ?? 0);
-      const prevMargin   = (prevSale - Math.floor(prevSale * (feeRate / 100))) - cost - fixedCost;
+      // 변경 직전 값 (가격 바꿀 때마다 localPrev에 기록)
+      const lp = localPrev[makeKey(item.brand, item.code)] || {};
+      const prevSale    = Number(lp.price_sale    ?? item.price_sale    ?? 0);
+      const prevNaver   = Number(lp.price_naver   ?? item.price_naver   ?? 0);
+      const prevCoupang = Number(lp.price_coupang ?? item.price_coupang ?? 0);
+      const prevRocket  = Number(lp.price_rocket  ?? item.price_rocket  ?? 0);
+      const prevGold    = Number(lp.price_gold    ?? item.price_gold    ?? 0);
+      const prevMargin  = (prevSale - Math.floor(prevSale * (feeRate / 100))) - cost - fixedCost;
 
       return {
         ...item, fee, settle, prevMargin, margin,
@@ -329,7 +315,7 @@ function App() {
       if (quickFilter === 'has-order') return (Number(item.order_w1||0)+Number(item.order_w2||0)+Number(item.order_w3||0)) > 0;
       return true;
     });
-  }, [masterProducts, groups, filterCategory, filterBrand, filterSeason, searchTerm, sortConfig, marginFilter, quickFilter, feeRate, fixedCost, priceSnapshot]);
+  }, [masterProducts, groups, filterCategory, filterBrand, filterSeason, searchTerm, sortConfig, marginFilter, quickFilter, feeRate, fixedCost, localPrev]);
 
   const visibleData = useMemo(() => {
     return processedData.filter(item => {
@@ -431,21 +417,24 @@ function App() {
   const saveEdit = async (item) => {
     const typeStr = String(item.type || '');
     const tbl = (typeStr.includes('단품') || typeStr.includes('구성')) ? 'master_products' : 'groups';
-    
+    const ik = makeKey(item.brand, item.code);
+    const priceFields = ['price_sale','price_naver','price_coupang','price_rocket','price_gold'];
+    const newPrev = {};
+    priceFields.forEach(f => {
+      if (Number(editRow[f]||0) !== Number(item[f]||0)) newPrev[f] = Number(item[f]||0);
+    });
+    if (Object.keys(newPrev).length > 0) {
+      setLocalPrev(prev => ({ ...prev, [ik]: { ...(prev[ik]||{}), ...newPrev } }));
+    }
     await supabase.from(tbl).update({
-      brand: editRow.brand, season: editRow.season, category: editRow.category, style_no: editRow.style_no, name: editRow.name, 
-      cost: Number(editRow.cost), tag_price: Number(editRow.tag_price), price_naver: Number(editRow.price_naver || 0), 
-      price_coupang: Number(editRow.price_coupang||0), price_rocket: Number(editRow.price_rocket||0), 
-      price_gold: Number(editRow.price_gold||0), price_sale: Number(editRow.price_sale || 0),
-      stock: Number(editRow.stock || 0),
-      hq_stock: Number(editRow.hq_stock || 0),
-      order_w1: Number(editRow.order_w1 || 0),
-      order_w2: Number(editRow.order_w2 || 0),
-      order_w3: Number(editRow.order_w3 || 0),
-      prev_naver: Number(item.price_naver || 0), prev_sale: Number(item.price_sale || 0)
-    }).eq('code', editingItem.code).eq('brand', editingItem.brand); 
-    
-    setEditingItem(null); 
+      brand: editRow.brand, season: editRow.season, category: editRow.category, style_no: editRow.style_no, name: editRow.name,
+      cost: Number(editRow.cost), tag_price: Number(editRow.tag_price), price_naver: Number(editRow.price_naver||0),
+      price_coupang: Number(editRow.price_coupang||0), price_rocket: Number(editRow.price_rocket||0),
+      price_gold: Number(editRow.price_gold||0), price_sale: Number(editRow.price_sale||0),
+      stock: Number(editRow.stock||0), hq_stock: Number(editRow.hq_stock||0),
+      order_w1: Number(editRow.order_w1||0), order_w2: Number(editRow.order_w2||0), order_w3: Number(editRow.order_w3||0),
+    }).eq('code', editingItem.code).eq('brand', editingItem.brand);
+    setEditingItem(null);
     fetchData();
   };
 
@@ -492,11 +481,14 @@ function App() {
     if (isSavingCellRef.current) return;
     isSavingCellRef.current = true;
     const numVal = Number(String(value).replace(/,/g, '') || 0);
+    const oldVal = Number(item[field] || 0);
+    if (numVal !== oldVal) {
+      // 변경 전 값을 localPrev에 기록
+      const ik = makeKey(item.brand, item.code);
+      setLocalPrev(prev => ({ ...prev, [ik]: { ...(prev[ik] || {}), [field]: oldVal } }));
+    }
     const tbl = groups.some(g => g.code === item.code && g.brand === item.brand) ? 'groups' : 'master_products';
-    const updateData = { [field]: numVal };
-    if (field === 'price_sale') updateData.prev_sale = Number(item.price_sale || 0);
-    if (field === 'price_naver') updateData.prev_naver = Number(item.price_naver || 0);
-    await supabase.from(tbl).update(updateData).eq('code', item.code).eq('brand', item.brand);
+    await supabase.from(tbl).update({ [field]: numVal }).eq('code', item.code).eq('brand', item.brand);
     setEditingCell(null);
     setEditingCellValue('');
     isSavingCellRef.current = false;
