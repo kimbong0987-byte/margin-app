@@ -1224,7 +1224,6 @@ function App() {
                     const isGhost = item.isGhost;
                     const isChild = item.isMappedChild;
                     const itemKey = makeKey(item.brand, item.code);
-                    const isSetParent = String(item.type||'').includes('세트') && !isChild;
                     const trBg = selectedCodes.includes(itemKey) ? '#fff9db' : (isChild ? '#f8fbfc' : '#fff');
                     const typeStr = String(item.type || '');
                     const isGroupType = typeStr.includes('묶음') || typeStr.includes('세트');
@@ -1256,7 +1255,7 @@ function App() {
                         </td>
                         <td style={{ ...tdStyle, ...fX(cols.cod.l), ...cellS(cols.cod), background: trBg, paddingLeft:isChild?'10px':'2px' }}>
                           {isChild && <span style={{color:'#bdc3c7',marginRight:'3px'}}>└</span>}
-                          <span style={{color:isGhost?GHOST_COLOR:'inherit'}}>{isSetParent ? `${item.code}(단품별도)` : item.code}</span>
+                          <span style={{color:isGhost?GHOST_COLOR:'inherit'}}>{(isChild && item.parentIsSet) ? `${item.code}(단품별도)` : item.code}</span>
                         </td>
                         <td style={{ ...tdStyle, ...fX(cols.cat.l), ...cellS(cols.cat), background: trBg }}>{isGhost ? <span style={{color:GHOST_COLOR}}>{item.category}</span> : renderInlineCell(item,'category',item.category,false,{inputType:'select',options:categories,width:'55px'})}</td>
                         <td style={{ ...tdStyle, ...fX(cols.sty.l), ...cellS(cols.sty), background: trBg }}>{isGhost ? <span style={{color:GHOST_COLOR}}>{item.style_no}</span> : renderInlineCell(item,'style_no',item.style_no,false,{inputType:'text'})}</td>
@@ -1377,7 +1376,7 @@ function App() {
                           {item.type}
                         </td>
 
-                        <td style={{ ...tdStyle, ...fX(cols.cod.l), ...cellS(cols.cod), background: trBg, paddingLeft: isChild?'10px':'2px' }}>{isChild && <span style={{color:'#bdc3c7', marginRight:'3px'}}>└</span>}{item.code}</td>
+                        <td style={{ ...tdStyle, ...fX(cols.cod.l), ...cellS(cols.cod), background: trBg, paddingLeft: isChild?'10px':'2px' }}>{isChild && <span style={{color:'#bdc3c7', marginRight:'3px'}}>└</span>}{(isChild && item.parentIsSet) ? `${item.code}(단품별도)` : item.code}</td>
                         <td style={{ ...tdStyle, ...fX(cols.cat.l), ...cellS(cols.cat), background: trBg }}>{item.category}</td>
                         <td style={{ ...tdStyle, ...fX(cols.sty.l), ...cellS(cols.sty), background: trBg }}>{item.style_no}</td>
                         <td style={{ ...tdStyle, ...fX(cols.nam.l), ...cellS(cols.nam), background: trBg, textAlign:'left', paddingLeft: isChild?'10px':'2px', borderRight: '2px solid #aaa' }}>
