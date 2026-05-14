@@ -839,6 +839,9 @@ function App() {
           }
 
           if (product) {
+            // 자식이 있는 묶음/세트 부모는 직접 매핑 스킵 → processedData에서 자식 합계로 표시
+            const isParentGroup = groups.some(g => g.code === product.code && g.brand === product.brand && g.children && g.children.length > 0);
+            if (isParentGroup) { matched++; continue; }
             const key = makeKey(product.brand, product.code);
             stockMap[key] = (stockMap[key] || 0) + qty;
             if (!barcodeMap[key]) barcodeMap[key] = new Set();
@@ -903,6 +906,8 @@ function App() {
           if (!product) product = findProductByBarcode(fullBarcode, allProducts);
 
           if (product) {
+            const isParentGroup = groups.some(g => g.code === product.code && g.brand === product.brand && g.children && g.children.length > 0);
+            if (isParentGroup) { matched++; continue; }
             const key = makeKey(product.brand, product.code);
             hqMap[key] = (hqMap[key] || 0) + qty;
             matched++;
@@ -1012,6 +1017,8 @@ function App() {
           if (!product) product = findProductByBarcode(bc, allProducts);
 
           if (product) {
+            const isParentGroup = groups.some(g => g.code === product.code && g.brand === product.brand && g.children && g.children.length > 0);
+            if (isParentGroup) { matched++; continue; }
             const key = makeKey(product.brand, product.code);
             if (!orderMap[key]) orderMap[key] = { w1: 0, w2: 0, w3: 0 };
             orderMap[key].w1 += w1;
