@@ -938,6 +938,19 @@ function App() {
     return updates.length;
   };
 
+  // 특정 브랜드 범위의 발주 수량 전체 초기화 (업로드 전 선행)
+  const resetOrdersByBrandFilter = async (isMontbell) => {
+    const allProducts = [...masterProducts, ...groups];
+    const targets = allProducts.filter(p =>
+      isMontbell ? cleanStr(p.brand) === '몽벨' : cleanStr(p.brand) !== '몽벨'
+    );
+    const resets = targets.map(p => {
+      const tbl = groups.some(g => g.code === p.code && g.brand === p.brand) ? 'groups' : 'master_products';
+      return supabase.from(tbl).update({ order_w1: 0, order_w2: 0, order_w3: 0 }).eq('code', p.code).eq('brand', p.brand);
+    });
+    await Promise.all(resets);
+  };
+
   // 몽벨 발주: 상품명 마지막() 바코드, 1주발주합계→w1, 2주발주합계→w2, 3주발주합계→w3
   const handleMWOrderExcelUpload = async (e) => {
     const file = e.target.files[0];
@@ -1000,6 +1013,7 @@ function App() {
           } else { unmatched++; }
         }
 
+        await resetOrdersByBrandFilter(true); // 몽벨 발주 전체 초기화
         const cnt = await applyOrderUpdate(orderMap);
         alert(`🛒 몽벨 발주 매핑 완료!\n✅ 매핑된 행: ${matched}건\n✅ 갱신 품번: ${cnt}건\n❌ 미매핑: ${unmatched}건`);
         fetchData();
@@ -1067,6 +1081,7 @@ function App() {
           } else { unmatched++; }
         }
 
+        await resetOrdersByBrandFilter(false); // 라온팩토리(몽벨 제외) 발주 전체 초기화
         const cnt = await applyOrderUpdate(orderMap);
         alert(`🛒 라온팩토리 발주 매핑 완료!\n✅ 매핑된 행: ${matched}건\n✅ 갱신 품번: ${cnt}건\n❌ 미매핑: ${unmatched}건`);
         fetchData();
