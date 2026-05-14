@@ -37,8 +37,6 @@ function App() {
     cost: '', tagPrice: '', priceNaver: '', priceCoupang: '', priceRocket: '', priceGold: '', priceSale: '' 
   });
   
-  const [editingItem, setEditingItem] = useState(null); 
-  const [editRow, setEditRow] = useState({});
 
   const [tempChild, setTempChild] = useState({ 
     brand: '', season: '', category: '', 품번코드: '', 스타일넘버: '', 상품명: '', 원가: '', tag가: '' 
@@ -61,6 +59,9 @@ function App() {
 
   // 가격 변경 전 값 기록 (변경 시점마다 갱신)
   const [localPrev, setLocalPrev] = useState({});
+
+  // 엑셀 업로드 신규 항목 확인 팝업
+  const [pendingExcelUpload, setPendingExcelUpload] = useState(null); // { rows, newBrands, newCategories, newSeasons }
 
   // 수수료율 / 고정비 설정 (Supabase 저장)
   const [feeRate, setFeeRate] = useState(18);
@@ -256,13 +257,15 @@ function App() {
           const w2 = Number(liveChild.order_w2 || 0);
           const w3 = Number(liveChild.order_w3 || 0);
 
-          expandedResult.push({ 
+          const parentIsSet = String(item.type||'').includes('세트');
+          expandedResult.push({
             ...liveChild,
             brand: liveChild.brand || item.brand,
             season: liveChild.season || item.season,
             category: liveChild.category || item.category,
-            type: 'ㄴ 구성', 
-            isMappedChild: true, 
+            type: parentIsSet ? `ㄴ${liveChild.code}(구성)` : 'ㄴ 구성',
+            isMappedChild: true,
+            parentIsSet,
             parentCode: item.code,
             parentBrand: item.brand,
             isGhost: isGhost,
@@ -414,29 +417,6 @@ function App() {
     fetchData();
   };
 
-  const saveEdit = async (item) => {
-    const typeStr = String(item.type || '');
-    const tbl = (typeStr.includes('단품') || typeStr.includes('구성')) ? 'master_products' : 'groups';
-    const ik = makeKey(item.brand, item.code);
-    const priceFields = ['price_sale','price_naver','price_coupang','price_rocket','price_gold'];
-    const newPrev = {};
-    priceFields.forEach(f => {
-      if (Number(editRow[f]||0) !== Number(item[f]||0)) newPrev[f] = Number(item[f]||0);
-    });
-    if (Object.keys(newPrev).length > 0) {
-      setLocalPrev(prev => ({ ...prev, [ik]: { ...(prev[ik]||{}), ...newPrev } }));
-    }
-    await supabase.from(tbl).update({
-      brand: editRow.brand, season: editRow.season, category: editRow.category, style_no: editRow.style_no, name: editRow.name,
-      cost: Number(editRow.cost), tag_price: Number(editRow.tag_price), price_naver: Number(editRow.price_naver||0),
-      price_coupang: Number(editRow.price_coupang||0), price_rocket: Number(editRow.price_rocket||0),
-      price_gold: Number(editRow.price_gold||0), price_sale: Number(editRow.price_sale||0),
-      stock: Number(editRow.stock||0), hq_stock: Number(editRow.hq_stock||0),
-      order_w1: Number(editRow.order_w1||0), order_w2: Number(editRow.order_w2||0), order_w3: Number(editRow.order_w3||0),
-    }).eq('code', editingItem.code).eq('brand', editingItem.brand);
-    setEditingItem(null);
-    fetchData();
-  };
 
   const handleBatchUpdate = async () => {
     if (!selectedCodes.length) return alert("선택된 상품이 없습니다.");
@@ -476,19 +456,24 @@ function App() {
     fetchData();
   };
 
-  // 인라인 셀 저장
+  // 인라인 셀 저장 (숫자/텍스트 통합)
+  const numericFields = ['cost','tag_price','price_naver','price_coupang','price_rocket','price_gold','price_sale','stock','hq_stock','order_w1','order_w2','order_w3'];
+  const priceFields = ['price_sale','price_naver','price_coupang','price_rocket','price_gold'];
+
   const handleCellSave = async (item, field, value) => {
     if (isSavingCellRef.current) return;
     isSavingCellRef.current = true;
-    const numVal = Number(String(value).replace(/,/g, '') || 0);
-    const oldVal = Number(item[field] || 0);
-    if (numVal !== oldVal) {
-      // 변경 전 값을 localPrev에 기록
-      const ik = makeKey(item.brand, item.code);
-      setLocalPrev(prev => ({ ...prev, [ik]: { ...(prev[ik] || {}), [field]: oldVal } }));
+    const isNum = numericFields.includes(field);
+    const saveVal = isNum ? Number(String(value).replace(/,/g,'') || 0) : String(value || '');
+    if (isNum && priceFields.includes(field)) {
+      const oldNum = Number(item[field] || 0);
+      if (saveVal !== oldNum) {
+        const ik = makeKey(item.brand, item.code);
+        setLocalPrev(prev => ({ ...prev, [ik]: { ...(prev[ik]||{}), [field]: oldNum } }));
+      }
     }
     const tbl = groups.some(g => g.code === item.code && g.brand === item.brand) ? 'groups' : 'master_products';
-    await supabase.from(tbl).update({ [field]: numVal }).eq('code', item.code).eq('brand', item.brand);
+    await supabase.from(tbl).update({ [field]: saveVal }).eq('code', item.code).eq('brand', item.brand);
     setEditingCell(null);
     setEditingCellValue('');
     isSavingCellRef.current = false;
@@ -573,59 +558,74 @@ function App() {
     XLSX.writeFile(wb, "MD_라인시트_데이터.xlsx");
   };
 
+  const applyListExcelUpload = async (rows) => {
+    const updatePromises = [];
+    for(const r of rows) {
+      const c = String(r["품번"] || "").trim();
+      const b = String(r["브랜드"] || "").trim();
+      if (!c || !b) continue;
+      const tbl = groups.some(g=>g.code===c && g.brand===b) ? 'groups' : 'master_products';
+      const payload = {};
+      if ("브랜드" in r) payload.brand = String(r["브랜드"]).trim();
+      if ("시즌" in r) payload.season = String(r["시즌"]).trim();
+      if ("복종" in r) payload.category = String(r["복종"]).trim();
+      if ("스타일코드" in r) payload.style_no = String(r["스타일코드"]).trim();
+      if ("상품명" in r) payload.name = String(r["상품명"]).trim();
+      if ("원가" in r) payload.cost = Number(String(r["원가"]).replace(/,/g,'') || 0);
+      if ("Tag가" in r) payload.tag_price = Number(String(r["Tag가"]).replace(/,/g,'') || 0);
+      if ("네이버(변경)" in r) payload.price_naver = Number(String(r["네이버(변경)"]).replace(/,/g,'') || 0);
+      if ("쿠팡(변경)" in r) payload.price_coupang = Number(String(r["쿠팡(변경)"]).replace(/,/g,'') || 0);
+      if ("로켓(변경)" in r) payload.price_rocket = Number(String(r["로켓(변경)"]).replace(/,/g,'') || 0);
+      if ("골드(변경)" in r) payload.price_gold = Number(String(r["골드(변경)"]).replace(/,/g,'') || 0);
+      if ("행사가(변경)" in r) payload.price_sale = Number(String(r["행사가(변경)"]).replace(/,/g,'') || 0);
+      if ("온라인재고" in r) payload.stock = Number(String(r["온라인재고"]).replace(/,/g,'') || 0);
+      if ("본사재고" in r) payload.hq_stock = Number(String(r["본사재고"]).replace(/,/g,'') || 0);
+      if ("1주발주" in r) payload.order_w1 = Number(String(r["1주발주"]).replace(/,/g,'') || 0);
+      if ("2주발주" in r) payload.order_w2 = Number(String(r["2주발주"]).replace(/,/g,'') || 0);
+      if ("3주발주" in r) payload.order_w3 = Number(String(r["3주발주"]).replace(/,/g,'') || 0);
+      if (Object.keys(payload).length > 0) {
+        updatePromises.push(supabase.from(tbl).update(payload).eq('code', c).eq('brand', b));
+      }
+    }
+    await Promise.all(updatePromises);
+    alert("✅ 엑셀 일괄 수정 업로드 완료!");
+    fetchData();
+  };
+
   const handleListExcelUpload = async (e) => {
-    const file = e.target.files[0]; 
+    const file = e.target.files[0];
     if(!file) return;
+    e.target.value = null;
     const reader = new FileReader();
     reader.onload = async (ev) => {
       try {
-        const rows = XLSX.utils.sheet_to_json(XLSX.read(ev.target.result, {type:'binary'}).Sheets[XLSX.read(ev.target.result, {type:'binary'}).SheetNames[0]], { defval: "" });
-        
-        const updatePromises = [];
+        const wb = XLSX.read(ev.target.result, {type:'binary'});
+        const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { defval: "" });
+
+        const newBrands = [];
+        const newCategories = [];
+        const newSeasons = [];
 
         for(const r of rows) {
-          const c = String(r["품번"] || "").trim();
           const b = String(r["브랜드"] || "").trim();
-          if (!c || !b) continue;
-
-          const tbl = groups.some(g=>g.code===c && g.brand===b) ? 'groups' : 'master_products';
-          const payload = {};
-
-          if ("브랜드" in r) payload.brand = String(r["브랜드"]);
-          if ("시즌" in r) payload.season = String(r["시즌"]);
-          if ("복종" in r) payload.category = String(r["복종"]);
-          if ("스타일코드" in r) payload.style_no = String(r["스타일코드"]);
-          if ("상품명" in r) payload.name = String(r["상품명"]);
-          
-          if ("원가" in r) payload.cost = Number(String(r["원가"]).replace(/,/g, '') || 0);
-          if ("Tag가" in r) payload.tag_price = Number(String(r["Tag가"]).replace(/,/g, '') || 0);
-          if ("네이버(변경)" in r) payload.price_naver = Number(String(r["네이버(변경)"]).replace(/,/g, '') || 0);
-          if ("쿠팡(변경)" in r) payload.price_coupang = Number(String(r["쿠팡(변경)"]).replace(/,/g, '') || 0);
-          if ("로켓(변경)" in r) payload.price_rocket = Number(String(r["로켓(변경)"]).replace(/,/g, '') || 0);
-          if ("골드(변경)" in r) payload.price_gold = Number(String(r["골드(변경)"]).replace(/,/g, '') || 0);
-          if ("행사가(변경)" in r) payload.price_sale = Number(String(r["행사가(변경)"]).replace(/,/g, '') || 0);
-          
-          if ("온라인재고" in r) payload.stock = Number(String(r["온라인재고"]).replace(/,/g, '') || 0);
-          if ("본사재고" in r) payload.hq_stock = Number(String(r["본사재고"]).replace(/,/g, '') || 0);
-          if ("1주발주" in r) payload.order_w1 = Number(String(r["1주발주"]).replace(/,/g, '') || 0);
-          if ("2주발주" in r) payload.order_w2 = Number(String(r["2주발주"]).replace(/,/g, '') || 0);
-          if ("3주발주" in r) payload.order_w3 = Number(String(r["3주발주"]).replace(/,/g, '') || 0);
-
-          if (Object.keys(payload).length > 0) {
-            updatePromises.push(supabase.from(tbl).update(payload).eq('code', c).eq('brand', b));
-          }
+          const cat = String(r["복종"] || "").trim();
+          const sea = String(r["시즌"] || "").trim();
+          if (b && !brands.includes(b) && !newBrands.includes(b)) newBrands.push(b);
+          if (cat && !categories.includes(cat) && !newCategories.includes(cat)) newCategories.push(cat);
+          if (sea && !seasons.includes(sea) && !newSeasons.includes(sea)) newSeasons.push(sea);
         }
-        
-        await Promise.all(updatePromises);
-        alert("✅ 엑셀 일괄 수정 업로드 완료!\n(다운로드 하셨던 엑셀의 모든 변경사항이 완벽하게 반영되었습니다.)"); 
-        fetchData();
+
+        if (newBrands.length > 0 || newCategories.length > 0 || newSeasons.length > 0) {
+          setPendingExcelUpload({ rows, newBrands, newCategories, newSeasons });
+        } else {
+          await applyListExcelUpload(rows);
+        }
       } catch (err) {
         console.error(err);
         alert("❌ 엑셀 처리 중 오류가 발생했습니다.");
       }
     };
-    reader.readAsBinaryString(file); 
-    e.target.value = null;
+    reader.readAsBinaryString(file);
   };
 
   const handleInventoryExcelUpload = async (e) => {
@@ -884,16 +884,15 @@ function App() {
   
   const cols = {
     chk: { w: 26,  l: 0 },
-    mng: { w: 36,  l: 26 },
-    brd: { w: 70,  l: 62 },   
-    sea: { w: 60,  l: 132 },  
-    typ: { w: 60,  l: 192 },
-    cod: { w: 80,  l: 252 },
-    cat: { w: 60,  l: 332 },
-    sty: { w: 130, l: 392 },
-    nam: { w: 320, l: 522 }, 
-    cst: { w: 60,  l: 842 }, 
-    tag: { w: 65,  l: 902 }, 
+    brd: { w: 70,  l: 26 },
+    sea: { w: 60,  l: 96 },
+    typ: { w: 90,  l: 156 },
+    cod: { w: 100, l: 246 },
+    cat: { w: 60,  l: 346 },
+    sty: { w: 120, l: 406 },
+    nam: { w: 300, l: 526 },
+    cst: { w: 60,  l: 826 },
+    tag: { w: 65,  l: 886 },
   };
 
   const fX = (l, isHeader = false) => {
@@ -911,26 +910,33 @@ function App() {
   const compareInputStyle = { width: '50px', fontSize: '10px', padding: '2px', border: '1px solid #3498db', borderRadius: '2px' };
   const inlineCellInputStyle = { width: '55px', fontSize: '10px', padding: '2px 3px', border: '2px solid #3498db', borderRadius: '3px', textAlign: 'right', outline: 'none' };
 
-  // 인라인 셀 편집 렌더 헬퍼
-  const renderInlineCell = (item, field, currentValue, isGhostItem, isRowEditing, opts = {}) => {
+  // 인라인 셀 편집 렌더 헬퍼 (숫자/텍스트/셀렉트 통합)
+  const renderInlineCell = (item, field, currentValue, isGhostItem, opts = {}) => {
     if (isGhostItem) return <span style={{color:GHOST_COLOR}}>-</span>;
     const ik = makeKey(item.brand, item.code);
     const isIC = editingCell?.key === ik && editingCell?.field === field;
-    const { width = '55px', color, bold } = opts;
-    const inputS = { ...inlineCellInputStyle, width, ...(color ? {color} : {}) };
+    const { width, color, bold, inputType = 'number', options = [] } = opts;
+    const isNum = inputType === 'number';
+    const baseInputS = { fontSize:'10px', padding:'2px 3px', border:'2px solid #3498db', borderRadius:'3px', outline:'none', ...(color?{color}:{}) };
 
-    if (isRowEditing) {
-      return <input type="number" value={editRow[field]||''} onChange={e=>setEditRow({...editRow,[field]:e.target.value})} style={{...inputS, border:'1px solid #ccc'}} />;
-    }
     if (isIC) {
-      return <input type="number" value={editingCellValue} autoFocus
+      if (inputType === 'select') {
+        return <select value={editingCellValue} autoFocus
+          onChange={e=>setEditingCellValue(e.target.value)}
+          onBlur={()=>handleCellSave(item,field,editingCellValue)}
+          onKeyDown={e=>{if(e.key==='Escape')setEditingCell(null);}}
+          style={{...baseInputS, width: width||'100%'}}>
+          {options.map(o=><option key={o} value={o}>{o}</option>)}
+        </select>;
+      }
+      return <input type={isNum?'number':'text'} value={editingCellValue} autoFocus
         onChange={e=>setEditingCellValue(e.target.value)}
         onKeyDown={e=>{if(e.key==='Enter')handleCellSave(item,field,editingCellValue);if(e.key==='Escape')setEditingCell(null);}}
         onBlur={()=>handleCellSave(item,field,editingCellValue)}
-        style={inputS} />;
+        style={{...baseInputS, width: width||(isNum?'55px':'95%')}} />;
     }
-    const disp = (Number(currentValue||0)).toLocaleString();
-    return <span onClick={()=>{setEditingCell({key:ik,field});setEditingCellValue(currentValue||0);}}
+    const disp = isNum ? (Number(currentValue||0)).toLocaleString() : (currentValue || '-');
+    return <span onClick={()=>{setEditingCell({key:ik,field});setEditingCellValue(isNum?(currentValue||0):(currentValue||''));}}
       style={{cursor:'pointer',fontWeight:bold?'bold':'normal',color:color||'inherit',textDecoration:'underline dotted #aaa'}}
       title="클릭하여 수정">{disp}</span>;
   };
@@ -950,6 +956,7 @@ function App() {
   });
 
   return (
+    <>
     <div style={{ display: 'flex', flexDirection: isMobile ? 'column' : 'row', minHeight: '100vh', width: '100vw', backgroundColor: '#f4f7f6', position: 'absolute', top: 0, left: 0, overflow: 'hidden' }}>
       
       {/* ⬅️ 네비게이션 */}
@@ -1192,7 +1199,6 @@ function App() {
                 <thead>
                   <tr style={{ background: '#f8f9fa' }}>
                     <th style={{ ...thStyle, ...fX(cols.chk.l, true), ...cellS(cols.chk) }}><input type="checkbox" onChange={handleSelectAll} checked={selectedCodes.length > 0 && selectedCodes.length === visibleData.filter(i=>!i.isGhost).length} /></th>
-                    <th style={{ ...thStyle, ...fX(cols.mng.l, true), ...cellS(cols.mng) }}>관리</th>
                     <th style={{ ...thStyle, ...fX(cols.brd.l, true), ...cellS(cols.brd) }} onClick={() => handleSort('brand')}>브랜드</th>
                     <th style={{ ...thStyle, ...fX(cols.sea.l, true), ...cellS(cols.sea) }} onClick={() => handleSort('season')}>시즌</th>
                     <th style={{ ...thStyle, ...fX(cols.typ.l, true), ...cellS(cols.typ) }} onClick={() => handleSort('type')}>구분</th>
@@ -1202,64 +1208,76 @@ function App() {
                     <th style={{ ...thStyle, ...fX(cols.nam.l, true), ...cellS(cols.nam), textAlign:'left' }} onClick={() => handleSort('name')}>상품명</th>
                     <th style={{ ...thStyle, ...fX(cols.cst.l, true), ...cellS(cols.cst) }} onClick={() => handleSort('cost')}>원가</th>
                     <th style={{ ...thStyle, ...fX(cols.tag.l, true), ...cellS(cols.tag), borderRight: '2px solid #aaa' }} onClick={() => handleSort('tag_price')}>Tag가</th>
-                    <th style={{...thStyle, width:'105px'}} onClick={() => handleSort('price_naver')}>네이버 (이전→변경)</th>
-                    <th style={{...thStyle, width:'105px'}} onClick={() => handleSort('price_coupang')}>쿠팡 (이전→변경)</th>
-                    <th style={{...thStyle, width:'105px'}} onClick={() => handleSort('price_rocket')}>로켓 (이전→변경)</th>
-                    <th style={{...thStyle, width:'105px'}} onClick={() => handleSort('price_gold')}>골드 (이전→변경)</th>
-                    <th style={{...thStyle, width:'115px', color:'#e17055', background:'#fff9f9'}} onClick={() => handleSort('price_sale')}>행사가 (이전→변경)</th>
+                    <th style={{...thStyle, width:'80px'}} onClick={() => handleSort('price_naver')}><div style={{fontSize:'9px',color:'#aaa'}}>이전</div>네이버</th>
+                    <th style={{...thStyle, width:'80px'}} onClick={() => handleSort('price_coupang')}><div style={{fontSize:'9px',color:'#aaa'}}>이전</div>쿠팡</th>
+                    <th style={{...thStyle, width:'80px'}} onClick={() => handleSort('price_rocket')}><div style={{fontSize:'9px',color:'#aaa'}}>이전</div>로켓</th>
+                    <th style={{...thStyle, width:'80px'}} onClick={() => handleSort('price_gold')}><div style={{fontSize:'9px',color:'#aaa'}}>이전</div>골드</th>
+                    <th style={{...thStyle, width:'85px', background:'#fff9f9'}} onClick={() => handleSort('price_sale')}><div style={{fontSize:'9px',color:'#aaa'}}>이전</div><span style={{color:'#e17055'}}>행사가</span></th>
                     <th style={{...thStyle, width:'50px'}}>수수료</th>
                     <th style={{...thStyle, width:'55px'}}>정산액</th>
                     <th style={{...thStyle, width:'35px'}}>배수</th>
-                    <th style={{...thStyle, width:'120px', color:'red'}} onClick={() => handleSort('margin')}>마진 (이전→변경)</th>
+                    <th style={{...thStyle, width:'95px', background:'#fff9f9'}} onClick={() => handleSort('margin')}><div style={{fontSize:'9px',color:'#aaa'}}>이전</div><span style={{color:'#e74c3c'}}>마진</span></th>
                   </tr>
                 </thead>
                 <tbody>
                   {visibleData.map((item, idx) => {
                     const isGhost = item.isGhost;
-                    const isE = editingItem && editingItem.code === item.code && editingItem.brand === item.brand && !isGhost; 
                     const isChild = item.isMappedChild;
                     const itemKey = makeKey(item.brand, item.code);
-                    const trBg = selectedCodes.includes(itemKey) ? '#fff9db' : (isE ? '#e3f2fd' : (isChild ? '#f8fbfc' : '#fff'));
-                    
+                    const isSetParent = String(item.type||'').includes('세트') && !isChild;
+                    const trBg = selectedCodes.includes(itemKey) ? '#fff9db' : (isChild ? '#f8fbfc' : '#fff');
                     const typeStr = String(item.type || '');
                     const isGroupType = typeStr.includes('묶음') || typeStr.includes('세트');
-
                     const prevN = item.prevNaver || 0;
                     const prevS = item.prevSale || 0;
-                    const curS = isE ? Number(editRow.price_sale || 0) : Number(item.price_sale || 0);
+                    const curS = Number(item.price_sale || 0);
                     const curMargin = (curS - Math.floor(curS * (feeRate / 100))) - Number(item.cost || 0) - fixedCost;
-                    
+
+                    // 스택형 가격 셀 렌더
+                    const stackCell = (field, prevVal, curVal, isSaleCol = false) => (
+                      isGhost ? <span style={{color:GHOST_COLOR}}>-</span> :
+                      <div style={{display:'flex',flexDirection:'column',gap:'1px',alignItems:'flex-end'}}>
+                        <span style={{fontSize:'9px',color:'#bbb',textDecoration: prevVal !== (Number(item[field]||0)) ? 'line-through' : 'none'}}>{prevVal.toLocaleString()}</span>
+                        <div style={{display:'flex',alignItems:'center',gap:'2px'}}>
+                          {renderInlineCell(item,field,curVal,false,{color:getDiffColor(prevVal,curVal),bold:prevVal!==curVal,width:'62px'})}
+                          {isSaleCol && <span style={{fontSize:'9px',color:'#aaa'}}>({item.discSale}%)</span>}
+                        </div>
+                      </div>
+                    );
+
                     return (
                       <tr key={`${itemKey}-${idx}`} style={{ background: trBg }}>
                         <td style={{ ...tdStyle, ...fX(cols.chk.l), ...cellS(cols.chk), background: trBg }}>{!isGhost && <input type="checkbox" checked={selectedCodes.includes(itemKey)} onChange={() => setSelectedCodes(prev => prev.includes(itemKey) ? prev.filter(c => c !== itemKey) : [...prev, itemKey])} />}</td>
-                        <td style={{ ...tdStyle, ...fX(cols.mng.l), ...cellS(cols.mng), background: trBg }}>{!isGhost ? (isE ? <button onClick={()=>saveEdit(item)} style={btnStyle}>완료</button> : <button onClick={()=>{setEditingItem({brand: item.brand, code: item.code}); setEditRow({...item});}} style={btnStyle}>수정</button>) : <span style={{color:GHOST_COLOR}}>-</span>}</td>
-                        <td style={{ ...tdStyle, ...fX(cols.brd.l), ...cellS(cols.brd), background: trBg }}>{isGhost ? <span style={{color:GHOST_COLOR}}>{item.brand}</span> : (isE ? <select value={editRow.brand||''} onChange={e=>setEditRow({...editRow, brand:e.target.value})} style={{fontSize:'10px', padding:'0', width:'100%'}}><option value="">-</option>{brands.map(b=><option key={b} value={b}>{b}</option>)}</select> : item.brand)}</td>
-                        <td style={{ ...tdStyle, ...fX(cols.sea.l), ...cellS(cols.sea), background: trBg }}>{isGhost ? <span style={{color:GHOST_COLOR}}>{item.season}</span> : (isE ? <select value={editRow.season||''} onChange={e=>setEditRow({...editRow, season:e.target.value})} style={{fontSize:'10px', padding:'0', width:'100%'}}><option value="">-</option>{seasons.map(s=><option key={s} value={s}>{s}</option>)}</select> : item.season)}</td>
-                        
-                        <td style={{ ...tdStyle, ...fX(cols.typ.l), ...cellS(cols.typ), background: trBg, color: isGhost ? GHOST_COLOR : (isGroupType?'#6c5ce7':(isChild?'#b2bec3':'#999')), fontWeight: isGroupType?'bold':'normal' }}>
-                          {isGroupType && (
-                            <span onClick={() => toggleGroup(itemKey)} style={{cursor:'pointer', marginRight:'4px', display:'inline-block', width:'12px', color:'#6c5ce7'}}>
-                              {collapsedGroups.includes(itemKey) ? '▶' : '▼'}
-                            </span>
-                          )}
+                        <td style={{ ...tdStyle, ...fX(cols.brd.l), ...cellS(cols.brd), background: trBg }}>{isGhost ? <span style={{color:GHOST_COLOR}}>{item.brand}</span> : renderInlineCell(item,'brand',item.brand,false,{inputType:'select',options:brands,width:'65px'})}</td>
+                        <td style={{ ...tdStyle, ...fX(cols.sea.l), ...cellS(cols.sea), background: trBg }}>{isGhost ? <span style={{color:GHOST_COLOR}}>{item.season}</span> : renderInlineCell(item,'season',item.season,false,{inputType:'select',options:seasons,width:'55px'})}</td>
+                        <td style={{ ...tdStyle, ...fX(cols.typ.l), ...cellS(cols.typ), background: trBg, color: isGhost?GHOST_COLOR:(isGroupType?'#6c5ce7':(isChild?'#888':'#999')), fontWeight:isGroupType?'bold':'normal' }}>
+                          {isGroupType && <span onClick={()=>toggleGroup(itemKey)} style={{cursor:'pointer',marginRight:'4px',color:'#6c5ce7'}}>{collapsedGroups.includes(itemKey)?'▶':'▼'}</span>}
                           {item.type}
                         </td>
-                        
-                        <td style={{ ...tdStyle, ...fX(cols.cod.l), ...cellS(cols.cod), background: trBg, paddingLeft: isChild?'10px':'2px' }}>{isChild && <span style={{color:'#bdc3c7', marginRight:'3px'}}>└</span>}<span style={{color: isGhost ? GHOST_COLOR : 'inherit'}}>{item.code}</span></td>
-                        <td style={{ ...tdStyle, ...fX(cols.cat.l), ...cellS(cols.cat), background: trBg }}>{isGhost ? <span style={{color:GHOST_COLOR}}>{item.category}</span> : (isE ? <select value={editRow.category||''} onChange={e=>setEditRow({...editRow, category:e.target.value})} style={{fontSize:'10px', padding:'0', width:'100%'}}>{categories.map(c=><option key={c} value={c}>{c}</option>)}</select> : item.category)}</td>
-                        <td style={{ ...tdStyle, ...fX(cols.sty.l), ...cellS(cols.sty), background: trBg }}>{isGhost ? <span style={{color:GHOST_COLOR}}>{item.style_no}</span> : (isE ? <input value={editRow.style_no||''} onChange={e=>setEditRow({...editRow, style_no:e.target.value})} style={{width:'90%', fontSize:'10px'}}/> : item.style_no)}</td>
-                        <td style={{ ...tdStyle, ...fX(cols.nam.l), ...cellS(cols.nam), background: trBg, textAlign:'left', paddingLeft: isChild?'10px':'2px' }}>{isGhost ? <span style={{color:GHOST_COLOR}}>{item.name} (중복)</span> : (isE ? <input value={editRow.name||''} onChange={e=>setEditRow({...editRow, name:e.target.value})} style={{width:'95%', fontSize:'10px'}}/> : item.name)}</td>
-                        <td style={{ ...tdStyle, ...fX(cols.cst.l), ...cellS(cols.cst), background: trBg }}>{renderInlineCell(item,'cost',item.cost,isGhost,isE,{width:'50px'})}</td>
-                        <td style={{ ...tdStyle, ...fX(cols.tag.l), ...cellS(cols.tag), background: trBg, borderRight: '2px solid #aaa' }}>{renderInlineCell(item,'tag_price',item.tag_price,isGhost,isE,{width:'55px',bold:true})}</td>
-                        <td style={tdStyle}>{isGhost?<span style={{color:GHOST_COLOR}}>-</span>:<><span style={{color:'#222'}}>{prevN.toLocaleString()}</span><span style={{color:'#999'}}> → </span>{renderInlineCell(item,'price_naver',item.price_naver,false,isE,{color:getDiffColor(prevN,isE?editRow.price_naver:item.price_naver)})}</>}</td>
-                        <td style={tdStyle}>{isGhost?<span style={{color:GHOST_COLOR}}>-</span>:<><span style={{color:'#222'}}>{(item.prevCoupang||0).toLocaleString()}</span><span style={{color:'#999'}}> → </span>{renderInlineCell(item,'price_coupang',item.price_coupang,false,isE,{color:getDiffColor(item.prevCoupang,isE?editRow.price_coupang:item.price_coupang)})}</>}</td>
-                        <td style={tdStyle}>{isGhost?<span style={{color:GHOST_COLOR}}>-</span>:<><span style={{color:'#222'}}>{(item.prevRocket||0).toLocaleString()}</span><span style={{color:'#999'}}> → </span>{renderInlineCell(item,'price_rocket',item.price_rocket,false,isE,{color:getDiffColor(item.prevRocket,isE?editRow.price_rocket:item.price_rocket)})}</>}</td>
-                        <td style={tdStyle}>{isGhost?<span style={{color:GHOST_COLOR}}>-</span>:<><span style={{color:'#222'}}>{(item.prevGold||0).toLocaleString()}</span><span style={{color:'#999'}}> → </span>{renderInlineCell(item,'price_gold',item.price_gold,false,isE,{color:getDiffColor(item.prevGold,isE?editRow.price_gold:item.price_gold)})}</>}</td>
-                        <td style={{...tdStyle,background:isE?'#fff9f9':'inherit'}}>{isGhost?<span style={{color:GHOST_COLOR}}>-</span>:<><span style={{color:'#222'}}>{prevS.toLocaleString()}</span><span style={{color:'#999'}}> → </span>{renderInlineCell(item,'price_sale',item.price_sale,false,isE,{color:getDiffColor(prevS,isE?editRow.price_sale:item.price_sale),width:'60px'})}{!isE&&<span style={{fontSize:'10px',color:'#999',marginLeft:'2px'}}>({item.discSale}%)</span>}</>}</td>
-                        <td style={tdStyle}>{isGhost ? <span style={{color:GHOST_COLOR}}>-</span> : Math.floor(curS * (feeRate / 100)).toLocaleString()}</td>
-                        <td style={{...tdStyle, fontWeight: isGhost ? 'normal' : 'bold'}}>{isGhost ? <span style={{color:GHOST_COLOR}}>-</span> : (curS - Math.floor(curS * (feeRate / 100))).toLocaleString()}</td>
-                        <td style={tdStyle}>{isGhost ? <span style={{color:GHOST_COLOR}}>-</span> : item.ratio}</td>
-                        <td style={{...tdStyle, fontWeight: isGhost ? 'normal' : 'bold', background: isE ? '#fff5f5' : '#fff9f9'}}>{isGhost ? <span style={{color:GHOST_COLOR}}>-</span> : (<><span style={{color:'#222'}}>{Number(item.prevMargin || 0).toLocaleString()}</span><span style={{color:'#999'}}> → </span><span style={{color: curMargin > Number(item.prevMargin||0) ? '#2980b9' : curMargin < Number(item.prevMargin||0) ? '#e74c3c' : '#222'}}>{curMargin.toLocaleString()}</span></>)}</td>
+                        <td style={{ ...tdStyle, ...fX(cols.cod.l), ...cellS(cols.cod), background: trBg, paddingLeft:isChild?'10px':'2px' }}>
+                          {isChild && <span style={{color:'#bdc3c7',marginRight:'3px'}}>└</span>}
+                          <span style={{color:isGhost?GHOST_COLOR:'inherit'}}>{isSetParent ? `${item.code}(단품별도)` : item.code}</span>
+                        </td>
+                        <td style={{ ...tdStyle, ...fX(cols.cat.l), ...cellS(cols.cat), background: trBg }}>{isGhost ? <span style={{color:GHOST_COLOR}}>{item.category}</span> : renderInlineCell(item,'category',item.category,false,{inputType:'select',options:categories,width:'55px'})}</td>
+                        <td style={{ ...tdStyle, ...fX(cols.sty.l), ...cellS(cols.sty), background: trBg }}>{isGhost ? <span style={{color:GHOST_COLOR}}>{item.style_no}</span> : renderInlineCell(item,'style_no',item.style_no,false,{inputType:'text'})}</td>
+                        <td style={{ ...tdStyle, ...fX(cols.nam.l), ...cellS(cols.nam), background: trBg, textAlign:'left', paddingLeft:isChild?'10px':'2px' }}>{isGhost ? <span style={{color:GHOST_COLOR}}>{item.name}(중복)</span> : renderInlineCell(item,'name',item.name,false,{inputType:'text'})}</td>
+                        <td style={{ ...tdStyle, ...fX(cols.cst.l), ...cellS(cols.cst), background: trBg }}>{renderInlineCell(item,'cost',item.cost,isGhost,{width:'50px'})}</td>
+                        <td style={{ ...tdStyle, ...fX(cols.tag.l), ...cellS(cols.tag), background: trBg, borderRight:'2px solid #aaa' }}>{renderInlineCell(item,'tag_price',item.tag_price,isGhost,{width:'55px',bold:true})}</td>
+                        <td style={{...tdStyle,textAlign:'right',paddingRight:'6px'}}>{stackCell('price_naver',prevN,Number(item.price_naver||0))}</td>
+                        <td style={{...tdStyle,textAlign:'right',paddingRight:'6px'}}>{stackCell('price_coupang',item.prevCoupang||0,Number(item.price_coupang||0))}</td>
+                        <td style={{...tdStyle,textAlign:'right',paddingRight:'6px'}}>{stackCell('price_rocket',item.prevRocket||0,Number(item.price_rocket||0))}</td>
+                        <td style={{...tdStyle,textAlign:'right',paddingRight:'6px'}}>{stackCell('price_gold',item.prevGold||0,Number(item.price_gold||0))}</td>
+                        <td style={{...tdStyle,textAlign:'right',paddingRight:'6px',background:'#fffaf8'}}>{stackCell('price_sale',prevS,curS,true)}</td>
+                        <td style={tdStyle}>{isGhost?<span style={{color:GHOST_COLOR}}>-</span>:Math.floor(curS*(feeRate/100)).toLocaleString()}</td>
+                        <td style={{...tdStyle,fontWeight:'bold'}}>{isGhost?<span style={{color:GHOST_COLOR}}>-</span>:(curS-Math.floor(curS*(feeRate/100))).toLocaleString()}</td>
+                        <td style={tdStyle}>{isGhost?<span style={{color:GHOST_COLOR}}>-</span>:item.ratio}</td>
+                        <td style={{...tdStyle,textAlign:'right',paddingRight:'6px',background:'#fff9f9'}}>
+                          {isGhost?<span style={{color:GHOST_COLOR}}>-</span>:
+                          <div style={{display:'flex',flexDirection:'column',gap:'1px',alignItems:'flex-end'}}>
+                            <span style={{fontSize:'9px',color:'#bbb',textDecoration:curMargin!==Number(item.prevMargin||0)?'line-through':'none'}}>{Number(item.prevMargin||0).toLocaleString()}</span>
+                            <span style={{fontWeight:'bold',color:curMargin>Number(item.prevMargin||0)?'#2980b9':curMargin<Number(item.prevMargin||0)?'#e74c3c':'#222'}}>{curMargin.toLocaleString()}</span>
+                          </div>}
+                        </td>
                       </tr>
                     );
                   })}
@@ -1317,7 +1335,6 @@ function App() {
                 <thead>
                   <tr style={{ background: '#f8f9fa' }}>
                     <th style={{ ...thStyle, ...fX(cols.chk.l, true), ...cellS(cols.chk) }}><input type="checkbox" onChange={handleSelectAll} checked={selectedCodes.length > 0 && selectedCodes.length === visibleData.length} /></th>
-                    <th style={{ ...thStyle, ...fX(cols.mng.l, true), ...cellS(cols.mng) }}>관리</th>
                     <th style={{ ...thStyle, ...fX(cols.brd.l, true), ...cellS(cols.brd) }} onClick={() => handleSort('brand')}>브랜드</th>
                     <th style={{ ...thStyle, ...fX(cols.sea.l, true), ...cellS(cols.sea) }} onClick={() => handleSort('season')}>시즌</th>
                     <th style={{ ...thStyle, ...fX(cols.typ.l, true), ...cellS(cols.typ) }} onClick={() => handleSort('type')}>구분</th>
@@ -1335,12 +1352,11 @@ function App() {
                 <tbody>
                   {visibleData.map((item, idx) => {
                     const isGhost = item.isGhost;
-                    const isE = editingItem && editingItem.code === item.code && editingItem.brand === item.brand && !isGhost; 
                     const isChild = item.isMappedChild;
                     const itemKey = makeKey(item.brand, item.code);
-                    const trBg = selectedCodes.includes(itemKey) ? '#fff9db' : (isE ? '#e3f2fd' : (isChild ? '#f8fbfc' : '#fff'));
-                    const txtColor = isGhost ? '#95a5a6' : 'inherit'; 
-                    
+                    const trBg = selectedCodes.includes(itemKey) ? '#fff9db' : (isChild ? '#f8fbfc' : '#fff');
+                    const txtColor = isGhost ? '#95a5a6' : 'inherit';
+
                     const typeStr = String(item.type || '');
                     const isGroupType = typeStr.includes('묶음') || typeStr.includes('세트');
                     
@@ -1348,9 +1364,6 @@ function App() {
                       <tr key={`inv-${itemKey}-${idx}`} style={{ background: trBg, color: txtColor }}>
                         <td style={{ ...tdStyle, ...fX(cols.chk.l), ...cellS(cols.chk), background: trBg }}>
                            <input type="checkbox" checked={selectedCodes.includes(itemKey)} onChange={() => setSelectedCodes(prev => prev.includes(itemKey) ? prev.filter(c => c !== itemKey) : [...prev, itemKey])} />
-                        </td>
-                        <td style={{ ...tdStyle, ...fX(cols.mng.l), ...cellS(cols.mng), background: trBg }}>
-                           {isE ? <button onClick={()=>saveEdit(item)} style={btnStyle}>완료</button> : <button onClick={()=>{setEditingItem({brand: item.brand, code: item.code}); setEditRow({...item});}} style={btnStyle}>수정</button>}
                         </td>
                         <td style={{ ...tdStyle, ...fX(cols.brd.l), ...cellS(cols.brd), background: trBg }}>{item.brand}</td>
                         <td style={{ ...tdStyle, ...fX(cols.sea.l), ...cellS(cols.sea), background: trBg }}>{item.season}</td>
@@ -1371,11 +1384,11 @@ function App() {
                           {item.name} {isGhost && <span style={{fontSize:'10px', color:'#e74c3c'}}>(중복)</span>}
                         </td>
                         
-                        <td style={{...tdStyle}}>{renderInlineCell(item,'order_w1',item.order_w1,isGhost,isE,{width:'55px'})}</td>
-                        <td style={{...tdStyle}}>{renderInlineCell(item,'order_w2',item.order_w2,isGhost,isE,{width:'55px'})}</td>
-                        <td style={{...tdStyle}}>{renderInlineCell(item,'order_w3',item.order_w3,isGhost,isE,{width:'55px'})}</td>
-                        <td style={{...tdStyle}}>{renderInlineCell(item,'stock',item.stock,isGhost,isE,{width:'60px',color:'#27ae60',bold:true})}</td>
-                        <td style={{...tdStyle}}>{renderInlineCell(item,'hq_stock',item.hq_stock,isGhost,isE,{width:'60px'})}</td>
+                        <td style={{...tdStyle}}>{renderInlineCell(item,'order_w1',item.order_w1,isGhost,{width:'55px'})}</td>
+                        <td style={{...tdStyle}}>{renderInlineCell(item,'order_w2',item.order_w2,isGhost,{width:'55px'})}</td>
+                        <td style={{...tdStyle}}>{renderInlineCell(item,'order_w3',item.order_w3,isGhost,{width:'55px'})}</td>
+                        <td style={{...tdStyle}}>{renderInlineCell(item,'stock',item.stock,isGhost,{width:'60px',color:'#27ae60',bold:true})}</td>
+                        <td style={{...tdStyle}}>{renderInlineCell(item,'hq_stock',item.hq_stock,isGhost,{width:'60px'})}</td>
                       </tr>
                     );
                   })}
@@ -1386,6 +1399,66 @@ function App() {
         )}
       </div>
     </div>
+
+    {/* ====== 엑셀 업로드 신규 항목 확인 팝업 ====== */}
+    {pendingExcelUpload && (
+      <div style={{position:'fixed',top:0,left:0,width:'100%',height:'100%',background:'rgba(0,0,0,0.5)',zIndex:9999,display:'flex',alignItems:'center',justifyContent:'center'}}>
+        <div style={{background:'#fff',borderRadius:'12px',padding:'28px 32px',maxWidth:'460px',width:'90%',boxShadow:'0 8px 32px rgba(0,0,0,0.2)'}}>
+          <h3 style={{margin:'0 0 16px',fontSize:'16px',color:'#2c3e50'}}>📋 신규 항목이 감지되었습니다</h3>
+          <p style={{fontSize:'13px',color:'#555',margin:'0 0 14px'}}>아래 항목들이 현재 목록에 없습니다. 추가하시겠습니까?</p>
+          {pendingExcelUpload.newBrands.length > 0 && (
+            <div style={{marginBottom:'10px'}}>
+              <div style={{fontSize:'12px',fontWeight:'bold',color:'#8e44ad',marginBottom:'4px'}}>브랜드</div>
+              <div style={{display:'flex',flexWrap:'wrap',gap:'6px'}}>
+                {pendingExcelUpload.newBrands.map(b => (
+                  <span key={b} style={{background:'#f4ecf7',border:'1px solid #8e44ad',color:'#6c3483',padding:'3px 10px',borderRadius:'12px',fontSize:'12px'}}>{b}</span>
+                ))}
+              </div>
+            </div>
+          )}
+          {pendingExcelUpload.newCategories.length > 0 && (
+            <div style={{marginBottom:'10px'}}>
+              <div style={{fontSize:'12px',fontWeight:'bold',color:'#2980b9',marginBottom:'4px'}}>복종</div>
+              <div style={{display:'flex',flexWrap:'wrap',gap:'6px'}}>
+                {pendingExcelUpload.newCategories.map(c => (
+                  <span key={c} style={{background:'#ebf5fb',border:'1px solid #2980b9',color:'#1a5276',padding:'3px 10px',borderRadius:'12px',fontSize:'12px'}}>{c}</span>
+                ))}
+              </div>
+            </div>
+          )}
+          {pendingExcelUpload.newSeasons.length > 0 && (
+            <div style={{marginBottom:'10px'}}>
+              <div style={{fontSize:'12px',fontWeight:'bold',color:'#27ae60',marginBottom:'4px'}}>시즌</div>
+              <div style={{display:'flex',flexWrap:'wrap',gap:'6px'}}>
+                {pendingExcelUpload.newSeasons.map(s => (
+                  <span key={s} style={{background:'#eafaf1',border:'1px solid #27ae60',color:'#1e8449',padding:'3px 10px',borderRadius:'12px',fontSize:'12px'}}>{s}</span>
+                ))}
+              </div>
+            </div>
+          )}
+          <div style={{display:'flex',gap:'12px',marginTop:'20px',justifyContent:'flex-end'}}>
+            <button onClick={() => setPendingExcelUpload(null)}
+              style={{padding:'8px 22px',background:'#ecf0f1',color:'#555',border:'none',borderRadius:'6px',fontSize:'13px',cursor:'pointer',fontWeight:'bold'}}>
+              X 취소
+            </button>
+            <button onClick={async () => {
+              const { rows, newBrands, newCategories, newSeasons } = pendingExcelUpload;
+              setPendingExcelUpload(null);
+              const inserts = [];
+              for (const b of newBrands) inserts.push(supabase.from('brands').insert({ name: b }));
+              for (const c of newCategories) inserts.push(supabase.from('categories').insert({ name: c }));
+              for (const s of newSeasons) inserts.push(supabase.from('seasons').insert({ name: s }));
+              await Promise.all(inserts);
+              await applyListExcelUpload(rows);
+            }}
+              style={{padding:'8px 22px',background:'#27ae60',color:'#fff',border:'none',borderRadius:'6px',fontSize:'13px',cursor:'pointer',fontWeight:'bold'}}>
+              O 추가 후 업로드
+            </button>
+          </div>
+        </div>
+      </div>
+    )}
+    </>
   );
 }
 
