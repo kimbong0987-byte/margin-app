@@ -730,6 +730,11 @@ function App() {
         }
         if (modelIdx === -1) return alert("❌ '모델명' 컬럼을 찾지 못했습니다.");
         if (stockIdx === -1) stockIdx = 17; // fallback
+        // 상품코드 컬럼 (숫자 코드 fallback용)
+        let codeIdx2 = -1;
+        if (rows[dataStart - 2]) {
+          codeIdx2 = rows[dataStart - 2].findIndex(c => cleanStr(c) === '상품코드');
+        }
 
         const allProducts = [...masterProducts, ...groups];
         const stockMap = {}, barcodeMap = {};
@@ -739,10 +744,16 @@ function App() {
           const row = rows[i];
           if (!Array.isArray(row)) continue;
           const bc = cleanStr(row[modelIdx]);
-          const qty = Number(String(row[stockIdx] || '0').replace(/,/g, '')) || 0;
+          const rawQty = row[stockIdx];
+          const qty = typeof rawQty === 'number' ? rawQty : Number(String(rawQty || '0').replace(/,/g, '')) || 0;
           if (!bc || bc.length < 4) continue;
 
-          const product = findProductByBarcode(bc, allProducts);
+          let product = findProductByBarcode(bc, allProducts);
+          // 모델명 매핑 실패 시 상품코드 숫자 fallback
+          if (!product && codeIdx2 !== -1) {
+            const numCode = cleanStr(row[codeIdx2]);
+            if (numCode) product = allProducts.find(p => cleanStr(p.code) === numCode);
+          }
           if (product) {
             const key = makeKey(product.brand, product.code);
             stockMap[key] = (stockMap[key] || 0) + qty;
@@ -760,7 +771,7 @@ function App() {
     reader.readAsBinaryString(file);
   };
 
-  // 몽벨 온라인재고: 바코드 + 합재고 컬럼
+  // 몽벨 온라인재고: 바코드 + 현재고(가용) 컬럼 (합재고는 수식이라 0 반환됨)
   const handleMWInventoryExcelUpload = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
@@ -772,23 +783,36 @@ function App() {
         const sheet = wb.Sheets[wb.SheetNames[0]];
         const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
 
-        let bcIdx = -1, stockIdx = -1, dataStart = -1;
+        let bcIdx = -1, stockIdx = -1, codeIdx = -1, dataStart = -1;
         for (let i = 0; i < Math.min(10, rows.length); i++) {
-          const row = rows[i];
-          if (!Array.isArray(row)) continue;
-          const fBc    = row.findIndex(c => cleanStr(c) === '바코드');
-          const fStock = row.findIndex(c => cleanStr(c) === '합재고');
-          if (fBc !== -1 && fStock !== -1) {
-            bcIdx = fBc; stockIdx = fStock; dataStart = i + 2; break; // +2: 헤더2행
+          const r0 = rows[i];
+          if (!Array.isArray(r0)) continue;
+          const fBc = r0.findIndex(c => cleanStr(c) === '바코드');
+          if (fBc === -1) continue;
+
+          bcIdx = fBc;
+          codeIdx = r0.findIndex(c => cleanStr(c) === '상품코드');
+
+          // 2행 헤더 구조: row i = 대분류, row i+1 = 소분류
+          // 현재고(가용) 찾기: 대분류에서 '현재고' 위치 → 소분류에서 '가용' 찾기
+          const r1 = rows[i + 1] || [];
+          const fHq = r0.findIndex(c => cleanStr(c).includes('현재고'));
+          if (fHq !== -1) {
+            for (let j = fHq; j < Math.min(fHq + 6, r0.length); j++) {
+              if (cleanStr(r1[j] || '').includes('가용')) { stockIdx = j; break; }
+            }
           }
-          if (fBc !== -1 || fStock !== -1) {
-            // 한 줄짜리 헤더일 수도
-            if (fBc !== -1) bcIdx = fBc;
-            if (fStock !== -1) stockIdx = fStock;
-            if (bcIdx !== -1 && stockIdx !== -1) { dataStart = i + 1; break; }
-          }
+          // 단일 행에 '현재고(가용)' 또는 '현재고가용' 통합 헤더 있을 때
+          if (stockIdx === -1) stockIdx = r0.findIndex(c => cleanStr(c).includes('현재고') && cleanStr(c).includes('가용'));
+          // 그래도 없으면 합재고 (수식이지만 캐시값 있을 수 있음)
+          if (stockIdx === -1) stockIdx = r0.findIndex(c => cleanStr(c).includes('합재고'));
+          // 최후 fallback: 6번 컬럼
+          if (stockIdx === -1) stockIdx = 6;
+
+          dataStart = i + 2; // 대분류+소분류 2행 헤더 이후
+          break;
         }
-        if (bcIdx === -1 || stockIdx === -1) return alert("❌ '바코드' 또는 '합재고' 컬럼을 찾지 못했습니다.");
+        if (bcIdx === -1) return alert("❌ '바코드' 컬럼을 찾지 못했습니다.");
 
         const allProducts = [...masterProducts, ...groups];
         const stockMap = {}, barcodeMap = {};
@@ -798,10 +822,17 @@ function App() {
           const row = rows[i];
           if (!Array.isArray(row)) continue;
           const bc  = cleanStr(row[bcIdx]);
-          const qty = Number(String(row[stockIdx] || '0').replace(/,/g, '')) || 0;
+          const rawQty = row[stockIdx];
+          // 수식 문자열(=IF...)은 0으로 처리하지 않고 건너뜀 방지: Number 변환
+          const qty = typeof rawQty === 'number' ? rawQty : Number(String(rawQty || '0').replace(/[,=]/g, '')) || 0;
           if (!bc || bc.length < 4) continue;
 
-          const product = findProductByBarcode(bc, allProducts);
+          let product = findProductByBarcode(bc, allProducts);
+          // 바코드 매핑 실패 시 상품코드 숫자 fallback
+          if (!product && codeIdx !== -1) {
+            const numCode = cleanStr(row[codeIdx]);
+            if (numCode) product = allProducts.find(p => cleanStr(p.code) === numCode);
+          }
           if (product) {
             const key = makeKey(product.brand, product.code);
             stockMap[key] = (stockMap[key] || 0) + qty;
