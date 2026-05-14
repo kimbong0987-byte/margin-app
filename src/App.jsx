@@ -25,6 +25,14 @@ const normalizeBarcode = (code) => {
   return s;
 };
 
+// 💡 style_no 전용 비교: 세대구분자(3/7)만 제거하고 색상코드는 보존
+// MW3EBWPL84BK ↔ MW7EBWPL84BK → true (리오더), MW3EBWPL84BK ↔ MW3EBWPL84NA → false (다른 색상)
+const styleNoMatch = (a, b) => {
+  if (!a || !b) return false;
+  const norm = s => cleanStr(s).replace(/^([A-Z]+)[37](?=[A-Z])/, '$1');
+  return norm(a) === norm(b);
+};
+
 // 💡 두 코드가 동일 상품인지 비교 (리오더 숫자 확장 + 브랜드 접두사 포함 케이스)
 const codesMatch = (a, b) => {
   if (!a || !b) return false;
@@ -827,15 +835,15 @@ function App() {
           // 1순위: C열 상품코드 → DB product.code 직접 매핑
           let product = allProducts.find(p => String(p.code) === numCode);
 
-          // 2순위: L열 바코드 뒤 3자리(사이즈) 제거 → 자식 style_no 매칭
+          // 2순위: L열 바코드 뒤 3자리(사이즈) 제거 → 자식 style_no 매칭 (색상 보존)
           if (!product && barcode.length > 3) {
-            const styleNoChild = barcode.slice(0, -3); // 사이즈 3자리 제거
-            product = allProducts.find(p => p.style_no && codesMatch(p.style_no, styleNoChild));
+            const styleNoChild = barcode.slice(0, -3);
+            product = allProducts.find(p => p.style_no && styleNoMatch(p.style_no, styleNoChild));
           }
 
-          // 3순위: M열 모델NO → 부모 style_no 매칭
+          // 3순위: M열 모델NO → 부모 style_no 매칭 (색상 보존)
           if (!product && modelNo) {
-            product = allProducts.find(p => p.style_no && codesMatch(p.style_no, modelNo));
+            product = allProducts.find(p => p.style_no && styleNoMatch(p.style_no, modelNo));
           }
 
           if (product) {
@@ -900,9 +908,9 @@ function App() {
           // 뒤 3자리 사이즈 제거 → 색상코드까지의 style_no
           const styleNoChild = fullBarcode.length > 3 ? fullBarcode.slice(0, -3) : fullBarcode;
 
-          // 1순위: 바코드 뒤 3자리 제거 → style_no codesMatch
-          let product = allProducts.find(p => p.style_no && codesMatch(p.style_no, styleNoChild));
-          // 2순위: 전체 바코드로 fallback (normalizeBarcode 활용)
+          // 1순위: 바코드 뒤 3자리 제거 → style_no 색상 보존 매칭
+          let product = allProducts.find(p => p.style_no && styleNoMatch(p.style_no, styleNoChild));
+          // 2순위: 전체 바코드로 fallback
           if (!product) product = findProductByBarcode(fullBarcode, allProducts);
 
           if (product) {
@@ -1011,8 +1019,8 @@ function App() {
           // 뒤 3자리 사이즈 제거 → 자식 style_no (e.g. MW3FAMIJ80NA095 → MW3FAMIJ80NA)
           const styleNoChild = bc.length > 3 ? bc.slice(0, -3) : bc;
 
-          // 1순위: 뒤 3자리 제거한 코드 → style_no codesMatch (리오더 3↔7 자동처리)
-          let product = allProducts.find(p => p.style_no && codesMatch(p.style_no, styleNoChild));
+          // 1순위: 뒤 3자리 제거한 코드 → style_no 색상 보존 매칭 (리오더 3↔7 자동처리)
+          let product = allProducts.find(p => p.style_no && styleNoMatch(p.style_no, styleNoChild));
           // 2순위: 전체 바코드로 fallback
           if (!product) product = findProductByBarcode(bc, allProducts);
 
