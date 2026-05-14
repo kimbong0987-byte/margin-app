@@ -50,6 +50,15 @@ function App() {
   const [isMobile, setIsMobile] = useState(window.innerWidth <= 768);
   const [collapsedGroups, setCollapsedGroups] = useState([]);
 
+  // 인라인 셀 편집
+  const [editingCell, setEditingCell] = useState(null); // { key, field }
+  const [editingCellValue, setEditingCellValue] = useState('');
+  const isSavingCellRef = React.useRef(false);
+
+  // 필터 강화
+  const [marginFilter, setMarginFilter] = useState({ min: '', max: '' });
+  const [quickFilter, setQuickFilter] = useState('');
+
   // ==========================================
   // 2. 초기 데이터 로드
   // ==========================================
@@ -230,22 +239,33 @@ function App() {
       }
     });
 
-    return expandedResult.map(item => {
-      const cost = Number(item.cost || 0); 
+    const mapped = expandedResult.map(item => {
+      const cost = Number(item.cost || 0);
       const tag = Number(item.tag_price || 0);
-      const sale = Number(item.price_sale || 0); 
-      const fee = Math.floor(sale * 0.18); 
-      const settle = sale - fee; 
+      const sale = Number(item.price_sale || 0);
+      const fee = Math.floor(sale * 0.18);
+      const settle = sale - fee;
       const pSale = Number(item.prev_sale || item.price_sale || 0);
       const pMargin = (pSale - Math.floor(pSale * 0.18)) - cost - 5000;
       const discSale = tag === 0 ? 0 : Math.round((1 - (sale / tag)) * 100);
-      
-      return { 
-        ...item, fee, settle, prevMargin: pMargin,
-        ratio: cost > 0 ? (sale / cost).toFixed(1) : "0.0", discSale 
+      const margin = (sale - fee) - cost - 5000;
+      return {
+        ...item, fee, settle, prevMargin: pMargin, margin,
+        ratio: cost > 0 ? (sale / cost).toFixed(1) : "0.0", discSale
       };
     });
-  }, [masterProducts, groups, filterCategory, filterBrand, filterSeason, searchTerm, sortConfig]);
+
+    return mapped.filter(item => {
+      if (item.isMappedChild) return true; // 자식 행은 필터 통과
+      const m = item.margin || 0;
+      if (marginFilter.min !== '' && m < Number(marginFilter.min)) return false;
+      if (marginFilter.max !== '' && m > Number(marginFilter.max)) return false;
+      if (quickFilter === 'neg') return m < 0;
+      if (quickFilter === 'zero-stock') return Number(item.stock || 0) === 0;
+      if (quickFilter === 'has-order') return (Number(item.order_w1||0)+Number(item.order_w2||0)+Number(item.order_w3||0)) > 0;
+      return true;
+    });
+  }, [masterProducts, groups, filterCategory, filterBrand, filterSeason, searchTerm, sortConfig, marginFilter, quickFilter]);
 
   const visibleData = useMemo(() => {
     return processedData.filter(item => {
@@ -398,8 +418,24 @@ function App() {
     });
 
     await Promise.all(promises);
-    alert("✅ 삭제 완료"); 
-    setSelectedCodes([]); 
+    alert("✅ 삭제 완료");
+    setSelectedCodes([]);
+    fetchData();
+  };
+
+  // 인라인 셀 저장
+  const handleCellSave = async (item, field, value) => {
+    if (isSavingCellRef.current) return;
+    isSavingCellRef.current = true;
+    const numVal = Number(String(value).replace(/,/g, '') || 0);
+    const tbl = groups.some(g => g.code === item.code && g.brand === item.brand) ? 'groups' : 'master_products';
+    const updateData = { [field]: numVal };
+    if (field === 'price_sale') updateData.prev_sale = Number(item.price_sale || 0);
+    if (field === 'price_naver') updateData.prev_naver = Number(item.price_naver || 0);
+    await supabase.from(tbl).update(updateData).eq('code', item.code).eq('brand', item.brand);
+    setEditingCell(null);
+    setEditingCellValue('');
+    isSavingCellRef.current = false;
     fetchData();
   };
 
@@ -817,6 +853,31 @@ function App() {
   const batchInputStyle = { width: isMobile ? '45px' : '55px', fontSize: '10px', padding: '4px', border: '1px solid #ccc', borderRadius: '3px' };
   const btnStyle = { padding:'2px 4px', background:'#eee', border:'1px solid #ccc', borderRadius:'3px', fontSize:'10px', cursor:'pointer' };
   const compareInputStyle = { width: '50px', fontSize: '10px', padding: '2px', border: '1px solid #3498db', borderRadius: '2px' };
+  const inlineCellInputStyle = { width: '55px', fontSize: '10px', padding: '2px 3px', border: '2px solid #3498db', borderRadius: '3px', textAlign: 'right', outline: 'none' };
+
+  // 인라인 셀 편집 렌더 헬퍼
+  const renderInlineCell = (item, field, currentValue, isGhostItem, isRowEditing, opts = {}) => {
+    if (isGhostItem) return <span style={{color:GHOST_COLOR}}>-</span>;
+    const ik = makeKey(item.brand, item.code);
+    const isIC = editingCell?.key === ik && editingCell?.field === field;
+    const { width = '55px', color, bold } = opts;
+    const inputS = { ...inlineCellInputStyle, width, ...(color ? {color} : {}) };
+
+    if (isRowEditing) {
+      return <input type="number" value={editRow[field]||''} onChange={e=>setEditRow({...editRow,[field]:e.target.value})} style={{...inputS, border:'1px solid #ccc'}} />;
+    }
+    if (isIC) {
+      return <input type="number" value={editingCellValue} autoFocus
+        onChange={e=>setEditingCellValue(e.target.value)}
+        onKeyDown={e=>{if(e.key==='Enter')handleCellSave(item,field,editingCellValue);if(e.key==='Escape')setEditingCell(null);}}
+        onBlur={()=>handleCellSave(item,field,editingCellValue)}
+        style={inputS} />;
+    }
+    const disp = (Number(currentValue||0)).toLocaleString();
+    return <span onClick={()=>{setEditingCell({key:ik,field});setEditingCellValue(currentValue||0);}}
+      style={{cursor:'pointer',fontWeight:bold?'bold':'normal',color:color||'inherit',textDecoration:'underline dotted #aaa'}}
+      title="클릭하여 수정">{disp}</span>;
+  };
 
   const sidebarStyle = isMobile
     ? { width: '100%', height: '65px', backgroundColor: '#2c3e50', color: '#fff', display: 'flex', flexDirection: 'row', justifyContent: 'space-around', alignItems: 'center', position:'fixed', bottom: 0, left: 0, zIndex: 999, padding: '0 10px', boxSizing: 'border-box' }
@@ -1017,6 +1078,27 @@ function App() {
               </div>
             </div>
 
+            {/* 마진 범위 & 퀵 필터 */}
+            <div style={{ background:'#f8f9fa', padding:'8px 12px', borderRadius:'8px', marginBottom:'8px', display:'flex', gap:'10px', alignItems:'center', flexWrap:'wrap', border:'1px solid #ddd', fontSize:'11px' }}>
+              <strong>🔍 마진 범위:</strong>
+              <input type="number" placeholder="최소" value={marginFilter.min} onChange={e=>setMarginFilter({...marginFilter,min:e.target.value})} style={{width:'70px',padding:'3px 5px',border:'1px solid #ccc',borderRadius:'4px',fontSize:'11px'}} />
+              <span>~</span>
+              <input type="number" placeholder="최대" value={marginFilter.max} onChange={e=>setMarginFilter({...marginFilter,max:e.target.value})} style={{width:'70px',padding:'3px 5px',border:'1px solid #ccc',borderRadius:'4px',fontSize:'11px'}} />
+              <button onClick={()=>setMarginFilter({min:'',max:''})} style={{padding:'3px 8px',border:'1px solid #ccc',borderRadius:'4px',fontSize:'11px',cursor:'pointer',background:'#fff'}}>초기화</button>
+              <div style={{width:'1px',height:'20px',background:'#ddd'}}/>
+              <strong>⚡ 퀵필터:</strong>
+              {[
+                {id:'neg', label:'🔴 마진 마이너스'},
+                {id:'zero-stock', label:'📦 온라인재고 0'},
+                {id:'has-order', label:'🛒 발주 있음'},
+              ].map(({id,label}) => (
+                <button key={id} onClick={()=>setQuickFilter(quickFilter===id?'':id)}
+                  style={{padding:'3px 10px',border:`1px solid ${quickFilter===id?'#e74c3c':'#ccc'}`,borderRadius:'12px',fontSize:'11px',cursor:'pointer',background:quickFilter===id?'#fdf0f0':'#fff',color:quickFilter===id?'#e74c3c':'#555',fontWeight:quickFilter===id?'bold':'normal'}}>
+                  {label}
+                </button>
+              ))}
+            </div>
+
             <div style={{ background:'#ebf3f9', padding:'8px', borderRadius:'8px', marginBottom:'15px', display:'flex', gap:'8px', alignItems:'center', border:'1px solid #3498db', overflowX:'auto', whiteSpace:'nowrap' }}>
               <strong style={{fontSize:'11px'}}>⚡ 일괄변경 ({selectedCodes.length}):</strong>
               <input type="number" placeholder="원가" onChange={e => setBatchInput({...batchInput, cost: e.target.value})} style={batchInputStyle} />
@@ -1093,13 +1175,13 @@ function App() {
                         <td style={{ ...tdStyle, ...fX(cols.cat.l), ...cellS(cols.cat), background: trBg }}>{isGhost ? <span style={{color:GHOST_COLOR}}>{item.category}</span> : (isE ? <select value={editRow.category||''} onChange={e=>setEditRow({...editRow, category:e.target.value})} style={{fontSize:'10px', padding:'0', width:'100%'}}>{categories.map(c=><option key={c} value={c}>{c}</option>)}</select> : item.category)}</td>
                         <td style={{ ...tdStyle, ...fX(cols.sty.l), ...cellS(cols.sty), background: trBg }}>{isGhost ? <span style={{color:GHOST_COLOR}}>{item.style_no}</span> : (isE ? <input value={editRow.style_no||''} onChange={e=>setEditRow({...editRow, style_no:e.target.value})} style={{width:'90%', fontSize:'10px'}}/> : item.style_no)}</td>
                         <td style={{ ...tdStyle, ...fX(cols.nam.l), ...cellS(cols.nam), background: trBg, textAlign:'left', paddingLeft: isChild?'10px':'2px' }}>{isGhost ? <span style={{color:GHOST_COLOR}}>{item.name} (중복)</span> : (isE ? <input value={editRow.name||''} onChange={e=>setEditRow({...editRow, name:e.target.value})} style={{width:'95%', fontSize:'10px'}}/> : item.name)}</td>
-                        <td style={{ ...tdStyle, ...fX(cols.cst.l), ...cellS(cols.cst), background: trBg }}>{isGhost ? <span style={{color:GHOST_COLOR}}>-</span> : (isE ? <input type="number" value={editRow.cost||''} onChange={e=>setEditRow({...editRow, cost:e.target.value})} style={{width:'40px', fontSize:'10px'}}/> : (item.cost || 0).toLocaleString())}</td>
-                        <td style={{ ...tdStyle, ...fX(cols.tag.l), ...cellS(cols.tag), background: trBg, borderRight: '2px solid #aaa', fontWeight: isGhost ? 'normal' : 'bold' }}>{isGhost ? <span style={{color:GHOST_COLOR}}>-</span> : (isE ? <input type="number" value={editRow.tag_price||''} onChange={e=>setEditRow({...editRow, tag_price:e.target.value})} style={{width:'40px', fontSize:'10px'}}/> : (item.tag_price || 0).toLocaleString())}</td>
-                        <td style={tdStyle}>{isGhost ? <span style={{color:GHOST_COLOR}}>-</span> : (<>{prevN.toLocaleString()} → {isE ? <input type="number" value={editRow.price_naver} onChange={e=>setEditRow({...editRow, price_naver:e.target.value})} style={{...compareInputStyle, color: getDiffColor(prevN, editRow.price_naver)}}/> : <span style={{color: getDiffColor(prevN, item.price_naver), marginLeft:'4px'}}>{(item.price_naver || 0).toLocaleString()}</span>}</>)}</td>
-                        <td style={tdStyle}>{isGhost ? <span style={{color:GHOST_COLOR}}>-</span> : (<>{(item.price_coupang || 0).toLocaleString()} → {isE ? <input type="number" value={editRow.price_coupang} onChange={e=>setEditRow({...editRow, price_coupang:e.target.value})} style={compareInputStyle}/> : <span style={{marginLeft:'4px'}}>{(item.price_coupang || 0).toLocaleString()}</span>}</>)}</td>
-                        <td style={tdStyle}>{isGhost ? <span style={{color:GHOST_COLOR}}>-</span> : (<>{(item.price_rocket || 0).toLocaleString()} → {isE ? <input type="number" value={editRow.price_rocket} onChange={e=>setEditRow({...editRow, price_rocket:e.target.value})} style={compareInputStyle}/> : <span style={{marginLeft:'4px'}}>{(item.price_rocket || 0).toLocaleString()}</span>}</>)}</td>
-                        <td style={tdStyle}>{isGhost ? <span style={{color:GHOST_COLOR}}>-</span> : (<>{(item.price_gold || 0).toLocaleString()} → {isE ? <input type="number" value={editRow.price_gold} onChange={e=>setEditRow({...editRow, price_gold:e.target.value})} style={compareInputStyle}/> : <span style={{marginLeft:'4px'}}>{(item.price_gold || 0).toLocaleString()}</span>}</>)}</td>
-                        <td style={{...tdStyle, color:'#e17055', background: isE ? '#fff9f9' : 'inherit'}}>{isGhost ? <span style={{color:GHOST_COLOR}}>-</span> : (<>{prevS.toLocaleString()} → {isE ? <input type="number" value={editRow.price_sale} onChange={e=>setEditRow({...editRow, price_sale:e.target.value})} style={{...compareInputStyle, width:'45px', color: getDiffColor(prevS, editRow.price_sale)}}/> : <span style={{color: getDiffColor(prevS, item.price_sale), marginLeft:'4px'}}>{(item.price_sale || 0).toLocaleString()}({item.discSale}%)</span>}</>)}</td>
+                        <td style={{ ...tdStyle, ...fX(cols.cst.l), ...cellS(cols.cst), background: trBg }}>{renderInlineCell(item,'cost',item.cost,isGhost,isE,{width:'50px'})}</td>
+                        <td style={{ ...tdStyle, ...fX(cols.tag.l), ...cellS(cols.tag), background: trBg, borderRight: '2px solid #aaa' }}>{renderInlineCell(item,'tag_price',item.tag_price,isGhost,isE,{width:'55px',bold:true})}</td>
+                        <td style={tdStyle}>{isGhost?<span style={{color:GHOST_COLOR}}>-</span>:(<>{prevN.toLocaleString()} → {renderInlineCell(item,'price_naver',item.price_naver,false,isE,{color:getDiffColor(prevN,isE?editRow.price_naver:item.price_naver)})}</>)}</td>
+                        <td style={tdStyle}>{isGhost?<span style={{color:GHOST_COLOR}}>-</span>:(<>{(item.price_coupang||0).toLocaleString()} → {renderInlineCell(item,'price_coupang',item.price_coupang,false,isE)}</>)}</td>
+                        <td style={tdStyle}>{isGhost?<span style={{color:GHOST_COLOR}}>-</span>:(<>{(item.price_rocket||0).toLocaleString()} → {renderInlineCell(item,'price_rocket',item.price_rocket,false,isE)}</>)}</td>
+                        <td style={tdStyle}>{isGhost?<span style={{color:GHOST_COLOR}}>-</span>:(<>{(item.price_gold||0).toLocaleString()} → {renderInlineCell(item,'price_gold',item.price_gold,false,isE)}</>)}</td>
+                        <td style={{...tdStyle,background:isE?'#fff9f9':'inherit'}}>{isGhost?<span style={{color:GHOST_COLOR}}>-</span>:<><span style={{color:'#e17055'}}>{prevS.toLocaleString()} → </span>{renderInlineCell(item,'price_sale',item.price_sale,false,isE,{color:getDiffColor(prevS,isE?editRow.price_sale:item.price_sale),width:'60px'})}{!isE&&<span style={{fontSize:'10px',color:'#999',marginLeft:'2px'}}>({item.discSale}%)</span>}</>}</td>
                         <td style={tdStyle}>{isGhost ? <span style={{color:GHOST_COLOR}}>-</span> : Math.floor(curS * 0.18).toLocaleString()}</td>
                         <td style={{...tdStyle, fontWeight: isGhost ? 'normal' : 'bold'}}>{isGhost ? <span style={{color:GHOST_COLOR}}>-</span> : (curS - Math.floor(curS * 0.18)).toLocaleString()}</td>
                         <td style={tdStyle}>{isGhost ? <span style={{color:GHOST_COLOR}}>-</span> : item.ratio}</td>
@@ -1215,11 +1297,11 @@ function App() {
                           {item.name} {isGhost && <span style={{fontSize:'10px', color:'#e74c3c'}}>(중복)</span>}
                         </td>
                         
-                        <td style={{...tdStyle, background: isE ? '#fff' : 'inherit'}}>{isE ? <input type="number" value={editRow.order_w1||0} onChange={e=>setEditRow({...editRow, order_w1:e.target.value})} style={{width:'50px', fontSize:'10px', textAlign:'center'}}/> : (item.order_w1 || 0).toLocaleString()}</td>
-                        <td style={{...tdStyle, background: isE ? '#fff' : 'inherit'}}>{isE ? <input type="number" value={editRow.order_w2||0} onChange={e=>setEditRow({...editRow, order_w2:e.target.value})} style={{width:'50px', fontSize:'10px', textAlign:'center'}}/> : (item.order_w2 || 0).toLocaleString()}</td>
-                        <td style={{...tdStyle, background: isE ? '#fff' : 'inherit'}}>{isE ? <input type="number" value={editRow.order_w3||0} onChange={e=>setEditRow({...editRow, order_w3:e.target.value})} style={{width:'50px', fontSize:'10px', textAlign:'center'}}/> : (item.order_w3 || 0).toLocaleString()}</td>
-                        <td style={{...tdStyle, color:'#27ae60', fontWeight:'bold', background: isE ? '#fff' : 'inherit'}}>{isE ? <input type="number" value={editRow.stock||0} onChange={e=>setEditRow({...editRow, stock:e.target.value})} style={{width:'50px', fontSize:'10px', textAlign:'center'}}/> : (item.stock || 0).toLocaleString()}</td>
-                        <td style={{...tdStyle, background: isE ? '#fff' : 'inherit'}}>{isE ? <input type="number" value={editRow.hq_stock||0} onChange={e=>setEditRow({...editRow, hq_stock:e.target.value})} style={{width:'50px', fontSize:'10px', textAlign:'center'}}/> : (item.hq_stock || 0).toLocaleString()}</td>
+                        <td style={{...tdStyle}}>{renderInlineCell(item,'order_w1',item.order_w1,isGhost,isE,{width:'55px'})}</td>
+                        <td style={{...tdStyle}}>{renderInlineCell(item,'order_w2',item.order_w2,isGhost,isE,{width:'55px'})}</td>
+                        <td style={{...tdStyle}}>{renderInlineCell(item,'order_w3',item.order_w3,isGhost,isE,{width:'55px'})}</td>
+                        <td style={{...tdStyle}}>{renderInlineCell(item,'stock',item.stock,isGhost,isE,{width:'60px',color:'#27ae60',bold:true})}</td>
+                        <td style={{...tdStyle}}>{renderInlineCell(item,'hq_stock',item.hq_stock,isGhost,isE,{width:'60px'})}</td>
                       </tr>
                     );
                   })}
