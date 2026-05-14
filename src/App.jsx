@@ -228,7 +228,7 @@ function App() {
     const matchedGroups = groups.filter(isMatch).map(g => ({ ...g, type: g.type || '묶음' }));
     const matchedSingles = masterProducts.filter(isMatch).map(p => ({ ...p, type: '단품' }));
 
-    // 단품으로 등록된 상품은 세트/묶음 자식이어도 별도 단품 행으로 표시
+    // 묶음/세트 자식으로 매핑된 품번은 별도 단품 행 없음
     const matchedMappedCodes = new Set();
     matchedGroups.forEach(g => {
       if (g.children) {
@@ -239,9 +239,7 @@ function App() {
       }
     });
 
-    // 구분 필터가 '단품'일 때는 세트 자식 여부 무관하게 모든 단품 표시
-    // '전체'/'세트'/'묶음' 필터일 때도 단품은 항상 독립 행으로 포함
-    const standaloneSingles = matchedSingles; // 필터 제거: 세트 매핑돼도 단품 행 유지
+    const standaloneSingles = matchedSingles.filter(s => !matchedMappedCodes.has(makeKey(s.brand, s.code)));
     let topLevel = [...matchedGroups, ...standaloneSingles];
 
     topLevel = topLevel.map(item => {
@@ -323,7 +321,7 @@ function App() {
             parentIsSet,
             parentCode: item.code,
             parentBrand: item.brand,
-            isGhost: isGhost,
+            isGhost: parentIsSet ? true : isGhost, // 세트 자식은 항상 읽기전용
             order_w1: w1,
             order_w2: w2,
             order_w3: w3,
