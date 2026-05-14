@@ -28,8 +28,9 @@ function App() {
   const [searchTerm, setSearchTerm] = useState('');
 
   const [filterCategory, setFilterCategory] = useState('전체');
-  const [filterBrand, setFilterBrand] = useState('전체');   
-  const [filterSeason, setFilterSeason] = useState('전체'); 
+  const [filterBrand, setFilterBrand] = useState('전체');
+  const [filterSeason, setFilterSeason] = useState('전체');
+  const [filterType, setFilterType] = useState('전체');
   const [sortConfig, setSortConfig] = useState({ key: 'code', direction: 'asc' });
   const [selectedCodes, setSelectedCodes] = useState([]); 
 
@@ -158,6 +159,11 @@ function App() {
       const matchCat = filterCategory === '전체' || item.category === filterCategory;
       const matchBrand = filterBrand === '전체' || item.brand === filterBrand;
       const matchSeason = filterSeason === '전체' || item.season === filterSeason;
+      const typeStr2 = String(item.type || '');
+      const matchType = filterType === '전체'
+        || (filterType === '묶음' && typeStr2.includes('묶음'))
+        || (filterType === '세트' && typeStr2.includes('세트'))
+        || (filterType === '단품' && !typeStr2.includes('묶음') && !typeStr2.includes('세트'));
       
       let searchString = String(item.code || "") + String(item.style_no || "") + String(item.name || "");
       if (item.children && Array.isArray(item.children)) {
@@ -167,7 +173,7 @@ function App() {
       }
       const matchSearch = term === '' || searchString.toLowerCase().includes(term);
 
-      return matchCat && matchBrand && matchSeason && matchSearch;
+      return matchCat && matchBrand && matchSeason && matchSearch && matchType;
     };
 
     const matchedGroups = groups.filter(isMatch).map(g => ({ ...g, type: g.type || '묶음' }));
@@ -260,7 +266,7 @@ function App() {
             brand: liveChild.brand || item.brand,
             season: liveChild.season || item.season,
             category: liveChild.category || item.category,
-            type: parentIsSet ? `ㄴ${item.code}(구성)` : 'ㄴ 구성',
+            type: `ㄴ${item.code}(구성)`,
             isMappedChild: true,
             parentIsSet,
             parentCode: item.code,
@@ -310,7 +316,7 @@ function App() {
       const m = item.margin || 0;
       return true;
     });
-  }, [masterProducts, groups, filterCategory, filterBrand, filterSeason, searchTerm, sortConfig, feeRate, fixedCost, localPrev]);
+  }, [masterProducts, groups, filterCategory, filterBrand, filterSeason, filterType, searchTerm, sortConfig, feeRate, fixedCost, localPrev]);
 
   const visibleData = useMemo(() => {
     return processedData.filter(item => {
@@ -1139,13 +1145,19 @@ function App() {
               <select value={filterCategory} onChange={e => setFilterCategory(e.target.value)} style={{padding:'6px', borderRadius:'6px', border:'1px solid #ddd', fontSize:'12px', flex: isMobile? '1 1 45%' : 'none'}}><option value="전체">복종 전체</option>{categories.map(c => <option key={c} value={c}>{c}</option>)}</select>
               <select value={filterBrand} onChange={e => setFilterBrand(e.target.value)} style={{padding:'6px', borderRadius:'6px', border:'1px solid #ddd', fontSize:'12px', flex: isMobile? '1 1 45%' : 'none'}}><option value="전체">브랜드 전체</option>{brands.map(b => <option key={b} value={b}>{b}</option>)}</select>
               <select value={filterSeason} onChange={e => setFilterSeason(e.target.value)} style={{padding:'6px', borderRadius:'6px', border:'1px solid #ddd', fontSize:'12px', flex: isMobile? '1 1 45%' : 'none'}}><option value="전체">시즌 전체</option>{seasons.map(s => <option key={s} value={s}>{s}</option>)}</select>
+              <select value={filterType} onChange={e => setFilterType(e.target.value)} style={{padding:'6px', borderRadius:'6px', border:'1px solid #ddd', fontSize:'12px', flex: isMobile? '1 1 45%' : 'none'}}>
+                <option value="전체">구분 전체</option>
+                <option value="단품">단품</option>
+                <option value="묶음">묶음</option>
+                <option value="세트">세트</option>
+              </select>
               <div style={{ display:'flex', width: isMobile ? '100%' : 'auto', gap:'5px' }}>
-                <input 
-                  placeholder="검색 (품번,상품명) 후 엔터" 
-                  value={searchInput} 
-                  onChange={e => setSearchInput(e.target.value)} 
+                <input
+                  placeholder="검색 (품번,상품명) 후 엔터"
+                  value={searchInput}
+                  onChange={e => setSearchInput(e.target.value)}
                   onKeyDown={e => { if(e.key === 'Enter') setSearchTerm(searchInput); }}
-                  style={{padding:'6px', flex:1, minWidth:'120px', border:'1px solid #ddd', borderRadius:'6px', fontSize:'12px'}} 
+                  style={{padding:'6px', flex:1, minWidth:'120px', border:'1px solid #ddd', borderRadius:'6px', fontSize:'12px'}}
                 />
                 <button onClick={() => setSearchTerm(searchInput)} style={{padding:'6px 15px', background:PRIMARY_COLOR, color:'#fff', border:'none', borderRadius:'6px', fontSize:'12px', cursor:'pointer', whiteSpace:'nowrap'}}>조회</button>
               </div>
@@ -1289,13 +1301,19 @@ function App() {
               <select value={filterCategory} onChange={e => setFilterCategory(e.target.value)} style={{padding:'6px', borderRadius:'6px', border:'1px solid #ddd', fontSize:'12px', flex: isMobile? '1 1 45%' : 'none'}}><option value="전체">복종 전체</option>{categories.map(c => <option key={c} value={c}>{c}</option>)}</select>
               <select value={filterBrand} onChange={e => setFilterBrand(e.target.value)} style={{padding:'6px', borderRadius:'6px', border:'1px solid #ddd', fontSize:'12px', flex: isMobile? '1 1 45%' : 'none'}}><option value="전체">브랜드 전체</option>{brands.map(b => <option key={b} value={b}>{b}</option>)}</select>
               <select value={filterSeason} onChange={e => setFilterSeason(e.target.value)} style={{padding:'6px', borderRadius:'6px', border:'1px solid #ddd', fontSize:'12px', flex: isMobile? '1 1 45%' : 'none'}}><option value="전체">시즌 전체</option>{seasons.map(s => <option key={s} value={s}>{s}</option>)}</select>
+              <select value={filterType} onChange={e => setFilterType(e.target.value)} style={{padding:'6px', borderRadius:'6px', border:'1px solid #ddd', fontSize:'12px', flex: isMobile? '1 1 45%' : 'none'}}>
+                <option value="전체">구분 전체</option>
+                <option value="단품">단품</option>
+                <option value="묶음">묶음</option>
+                <option value="세트">세트</option>
+              </select>
               <div style={{ display:'flex', width: isMobile ? '100%' : 'auto', gap:'5px' }}>
-                <input 
-                  placeholder="검색 (품번,상품명) 후 엔터" 
-                  value={searchInput} 
-                  onChange={e => setSearchInput(e.target.value)} 
+                <input
+                  placeholder="검색 (품번,상품명) 후 엔터"
+                  value={searchInput}
+                  onChange={e => setSearchInput(e.target.value)}
                   onKeyDown={e => { if(e.key === 'Enter') setSearchTerm(searchInput); }}
-                  style={{padding:'6px', flex:1, minWidth:'120px', border:'1px solid #ddd', borderRadius:'6px', fontSize:'12px'}} 
+                  style={{padding:'6px', flex:1, minWidth:'120px', border:'1px solid #ddd', borderRadius:'6px', fontSize:'12px'}}
                 />
                 <button onClick={() => setSearchTerm(searchInput)} style={{padding:'6px 15px', background:PRIMARY_COLOR, color:'#fff', border:'none', borderRadius:'6px', fontSize:'12px', cursor:'pointer', whiteSpace:'nowrap'}}>조회</button>
               </div>
