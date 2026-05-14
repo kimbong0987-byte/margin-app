@@ -59,6 +59,19 @@ function App() {
   const [marginFilter, setMarginFilter] = useState({ min: '', max: '' });
   const [quickFilter, setQuickFilter] = useState('');
 
+  // 수수료율 설정 (localStorage 저장)
+  const [feeRate, setFeeRate] = useState(() => Number(localStorage.getItem('feeRate') || 18));
+  const [feeRateInput, setFeeRateInput] = useState(() => String(localStorage.getItem('feeRate') || '18'));
+
+  const handleFeeRateChange = (val) => {
+    setFeeRateInput(val);
+    const n = Number(val);
+    if (!isNaN(n) && n >= 0 && n <= 100) {
+      setFeeRate(n);
+      localStorage.setItem('feeRate', n);
+    }
+  };
+
   // ==========================================
   // 2. 초기 데이터 로드
   // ==========================================
@@ -179,7 +192,7 @@ function App() {
        
        const cost = Number(calcItem.cost || 0);
        const sale = Number(calcItem.price_sale || 0);
-       calcItem.margin = (sale - Math.floor(sale * 0.18)) - cost - 5000;
+       calcItem.margin = (sale - Math.floor(sale * (feeRate / 100))) - cost - 5000;
 
        return calcItem;
     });
@@ -243,10 +256,10 @@ function App() {
       const cost = Number(item.cost || 0);
       const tag = Number(item.tag_price || 0);
       const sale = Number(item.price_sale || 0);
-      const fee = Math.floor(sale * 0.18);
+      const fee = Math.floor(sale * (feeRate / 100));
       const settle = sale - fee;
       const pSale = Number(item.prev_sale || item.price_sale || 0);
-      const pMargin = (pSale - Math.floor(pSale * 0.18)) - cost - 5000;
+      const pMargin = (pSale - Math.floor(pSale * (feeRate / 100))) - cost - 5000;
       const discSale = tag === 0 ? 0 : Math.round((1 - (sale / tag)) * 100);
       const margin = (sale - fee) - cost - 5000;
       return {
@@ -265,7 +278,7 @@ function App() {
       if (quickFilter === 'has-order') return (Number(item.order_w1||0)+Number(item.order_w2||0)+Number(item.order_w3||0)) > 0;
       return true;
     });
-  }, [masterProducts, groups, filterCategory, filterBrand, filterSeason, searchTerm, sortConfig, marginFilter, quickFilter]);
+  }, [masterProducts, groups, filterCategory, filterBrand, filterSeason, searchTerm, sortConfig, marginFilter, quickFilter, feeRate]);
 
   const visibleData = useMemo(() => {
     return processedData.filter(item => {
@@ -497,7 +510,7 @@ function App() {
     const dataToExport = src.map(item => {
       const curS = Number(item.price_sale || 0);
       const cost = Number(item.cost || 0);
-      const margin = (curS - Math.floor(curS * 0.18)) - cost - 5000;
+      const margin = (curS - Math.floor(curS * (feeRate / 100))) - cost - 5000;
 
       return {
         "구분": item.type, "품번": item.code, "브랜드": item.brand || '', "시즌": item.season || '',
@@ -1059,6 +1072,15 @@ function App() {
                   📁 가격/기본수정
                   <input type="file" onChange={handleListExcelUpload} style={{display:'none'}} />
                 </label>
+                <div style={{display:'flex', alignItems:'center', gap:'4px', background:'#fff3cd', padding:'4px 10px', borderRadius:'6px', border:'1px solid #f0c040'}}>
+                  <span style={{fontSize:'11px', fontWeight:'bold', whiteSpace:'nowrap'}}>💸 수수료율</span>
+                  <input
+                    type="number" value={feeRateInput} min="0" max="100" step="0.1"
+                    onChange={e => handleFeeRateChange(e.target.value)}
+                    style={{width:'42px', fontSize:'12px', fontWeight:'bold', textAlign:'center', border:'1px solid #f0c040', borderRadius:'4px', padding:'2px 4px'}}
+                  />
+                  <span style={{fontSize:'11px', fontWeight:'bold'}}>%</span>
+                </div>
               </div>
             </div>
             
@@ -1153,7 +1175,7 @@ function App() {
                     const prevN = Number(item.prev_naver || item.price_naver || 0);
                     const prevS = Number(item.prev_sale || item.price_sale || 0);
                     const curS = isE ? Number(editRow.price_sale || 0) : Number(item.price_sale || 0);
-                    const curMargin = (curS - Math.floor(curS * 0.18)) - Number(item.cost || 0) - 5000;
+                    const curMargin = (curS - Math.floor(curS * (feeRate / 100))) - Number(item.cost || 0) - 5000;
                     
                     return (
                       <tr key={`${itemKey}-${idx}`} style={{ background: trBg }}>
@@ -1182,8 +1204,8 @@ function App() {
                         <td style={tdStyle}>{isGhost?<span style={{color:GHOST_COLOR}}>-</span>:(<>{(item.price_rocket||0).toLocaleString()} → {renderInlineCell(item,'price_rocket',item.price_rocket,false,isE)}</>)}</td>
                         <td style={tdStyle}>{isGhost?<span style={{color:GHOST_COLOR}}>-</span>:(<>{(item.price_gold||0).toLocaleString()} → {renderInlineCell(item,'price_gold',item.price_gold,false,isE)}</>)}</td>
                         <td style={{...tdStyle,background:isE?'#fff9f9':'inherit'}}>{isGhost?<span style={{color:GHOST_COLOR}}>-</span>:<><span style={{color:'#e17055'}}>{prevS.toLocaleString()} → </span>{renderInlineCell(item,'price_sale',item.price_sale,false,isE,{color:getDiffColor(prevS,isE?editRow.price_sale:item.price_sale),width:'60px'})}{!isE&&<span style={{fontSize:'10px',color:'#999',marginLeft:'2px'}}>({item.discSale}%)</span>}</>}</td>
-                        <td style={tdStyle}>{isGhost ? <span style={{color:GHOST_COLOR}}>-</span> : Math.floor(curS * 0.18).toLocaleString()}</td>
-                        <td style={{...tdStyle, fontWeight: isGhost ? 'normal' : 'bold'}}>{isGhost ? <span style={{color:GHOST_COLOR}}>-</span> : (curS - Math.floor(curS * 0.18)).toLocaleString()}</td>
+                        <td style={tdStyle}>{isGhost ? <span style={{color:GHOST_COLOR}}>-</span> : Math.floor(curS * (feeRate / 100)).toLocaleString()}</td>
+                        <td style={{...tdStyle, fontWeight: isGhost ? 'normal' : 'bold'}}>{isGhost ? <span style={{color:GHOST_COLOR}}>-</span> : (curS - Math.floor(curS * (feeRate / 100))).toLocaleString()}</td>
                         <td style={tdStyle}>{isGhost ? <span style={{color:GHOST_COLOR}}>-</span> : item.ratio}</td>
                         <td style={{...tdStyle, color:'red', fontWeight: isGhost ? 'normal' : 'bold', background: isE ? '#fff5f5' : '#fff9f9'}}>{isGhost ? <span style={{color:GHOST_COLOR}}>-</span> : (<>{Number(item.prevMargin || 0).toLocaleString()} → {curMargin.toLocaleString()}</>)}</td>
                       </tr>
