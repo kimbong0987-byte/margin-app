@@ -59,6 +59,10 @@ function App() {
   const [marginFilter, setMarginFilter] = useState({ min: '', max: '' });
   const [quickFilter, setQuickFilter] = useState('');
 
+  // 가격 스냅샷 (앱 첫 로드 시 저장 → 이전값 기준으로 사용)
+  const [priceSnapshot, setPriceSnapshot] = useState({});
+  const isSnapshotTaken = React.useRef(false);
+
   // 수수료율 / 고정비 설정 (Supabase 저장)
   const [feeRate, setFeeRate] = useState(18);
   const [feeRateInput, setFeeRateInput] = useState('18');
@@ -120,6 +124,19 @@ function App() {
       if (seaData) setSeasons(seaData.map(s => s.name));
       if (prodData) setMasterProducts(prodData);
       if (groupData) setGroups(groupData);
+
+      // 첫 로드 시에만 가격 스냅샷 저장
+      if (!isSnapshotTaken.current && prodData && groupData) {
+        const snap = {};
+        [...prodData, ...groupData].forEach(p => {
+          snap[makeKey(p.brand, p.code)] = {
+            price_sale: p.price_sale, price_naver: p.price_naver,
+            price_coupang: p.price_coupang, price_rocket: p.price_rocket, price_gold: p.price_gold,
+          };
+        });
+        setPriceSnapshot(snap);
+        isSnapshotTaken.current = true;
+      }
     } catch (e) { 
       console.error("데이터 로드 실패:", e); 
     }
@@ -283,12 +300,21 @@ function App() {
       const sale = Number(item.price_sale || 0);
       const fee = Math.floor(sale * (feeRate / 100));
       const settle = sale - fee;
-      const pSale = Number(item.prev_sale || item.price_sale || 0);
-      const pMargin = (pSale - Math.floor(pSale * (feeRate / 100))) - cost - fixedCost;
       const discSale = tag === 0 ? 0 : Math.round((1 - (sale / tag)) * 100);
       const margin = (sale - fee) - cost - fixedCost;
+
+      // 스냅샷 기반 이전값 (앱 첫 로드 시 저장된 값)
+      const snap = priceSnapshot[makeKey(item.brand, item.code)] || {};
+      const prevSale     = Number(snap.price_sale     ?? item.price_sale     ?? 0);
+      const prevNaver    = Number(snap.price_naver    ?? item.price_naver    ?? 0);
+      const prevCoupang  = Number(snap.price_coupang  ?? item.price_coupang  ?? 0);
+      const prevRocket   = Number(snap.price_rocket   ?? item.price_rocket   ?? 0);
+      const prevGold     = Number(snap.price_gold     ?? item.price_gold     ?? 0);
+      const prevMargin   = (prevSale - Math.floor(prevSale * (feeRate / 100))) - cost - fixedCost;
+
       return {
-        ...item, fee, settle, prevMargin: pMargin, margin,
+        ...item, fee, settle, prevMargin, margin,
+        prevSale, prevNaver, prevCoupang, prevRocket, prevGold,
         ratio: cost > 0 ? (sale / cost).toFixed(1) : "0.0", discSale
       };
     });
@@ -303,7 +329,7 @@ function App() {
       if (quickFilter === 'has-order') return (Number(item.order_w1||0)+Number(item.order_w2||0)+Number(item.order_w3||0)) > 0;
       return true;
     });
-  }, [masterProducts, groups, filterCategory, filterBrand, filterSeason, searchTerm, sortConfig, marginFilter, quickFilter, feeRate, fixedCost]);
+  }, [masterProducts, groups, filterCategory, filterBrand, filterSeason, searchTerm, sortConfig, marginFilter, quickFilter, feeRate, fixedCost, priceSnapshot]);
 
   const visibleData = useMemo(() => {
     return processedData.filter(item => {
@@ -1206,10 +1232,10 @@ function App() {
                     const typeStr = String(item.type || '');
                     const isGroupType = typeStr.includes('묶음') || typeStr.includes('세트');
 
-                    const prevN = Number(item.prev_naver || item.price_naver || 0);
-                    const prevS = Number(item.prev_sale || item.price_sale || 0);
+                    const prevN = item.prevNaver || 0;
+                    const prevS = item.prevSale || 0;
                     const curS = isE ? Number(editRow.price_sale || 0) : Number(item.price_sale || 0);
-                    const curMargin = (curS - Math.floor(curS * (feeRate / 100))) - Number(item.cost || 0) - 5000;
+                    const curMargin = (curS - Math.floor(curS * (feeRate / 100))) - Number(item.cost || 0) - fixedCost;
                     
                     return (
                       <tr key={`${itemKey}-${idx}`} style={{ background: trBg }}>
@@ -1234,9 +1260,9 @@ function App() {
                         <td style={{ ...tdStyle, ...fX(cols.cst.l), ...cellS(cols.cst), background: trBg }}>{renderInlineCell(item,'cost',item.cost,isGhost,isE,{width:'50px'})}</td>
                         <td style={{ ...tdStyle, ...fX(cols.tag.l), ...cellS(cols.tag), background: trBg, borderRight: '2px solid #aaa' }}>{renderInlineCell(item,'tag_price',item.tag_price,isGhost,isE,{width:'55px',bold:true})}</td>
                         <td style={tdStyle}>{isGhost?<span style={{color:GHOST_COLOR}}>-</span>:<><span style={{color:'#222'}}>{prevN.toLocaleString()}</span><span style={{color:'#999'}}> → </span>{renderInlineCell(item,'price_naver',item.price_naver,false,isE,{color:getDiffColor(prevN,isE?editRow.price_naver:item.price_naver)})}</>}</td>
-                        <td style={tdStyle}>{isGhost?<span style={{color:GHOST_COLOR}}>-</span>:<><span style={{color:'#222'}}>{(item.price_coupang||0).toLocaleString()}</span><span style={{color:'#999'}}> → </span>{renderInlineCell(item,'price_coupang',item.price_coupang,false,isE,{color:getDiffColor(item.price_coupang,isE?editRow.price_coupang:item.price_coupang)})}</>}</td>
-                        <td style={tdStyle}>{isGhost?<span style={{color:GHOST_COLOR}}>-</span>:<><span style={{color:'#222'}}>{(item.price_rocket||0).toLocaleString()}</span><span style={{color:'#999'}}> → </span>{renderInlineCell(item,'price_rocket',item.price_rocket,false,isE,{color:getDiffColor(item.price_rocket,isE?editRow.price_rocket:item.price_rocket)})}</>}</td>
-                        <td style={tdStyle}>{isGhost?<span style={{color:GHOST_COLOR}}>-</span>:<><span style={{color:'#222'}}>{(item.price_gold||0).toLocaleString()}</span><span style={{color:'#999'}}> → </span>{renderInlineCell(item,'price_gold',item.price_gold,false,isE,{color:getDiffColor(item.price_gold,isE?editRow.price_gold:item.price_gold)})}</>}</td>
+                        <td style={tdStyle}>{isGhost?<span style={{color:GHOST_COLOR}}>-</span>:<><span style={{color:'#222'}}>{(item.prevCoupang||0).toLocaleString()}</span><span style={{color:'#999'}}> → </span>{renderInlineCell(item,'price_coupang',item.price_coupang,false,isE,{color:getDiffColor(item.prevCoupang,isE?editRow.price_coupang:item.price_coupang)})}</>}</td>
+                        <td style={tdStyle}>{isGhost?<span style={{color:GHOST_COLOR}}>-</span>:<><span style={{color:'#222'}}>{(item.prevRocket||0).toLocaleString()}</span><span style={{color:'#999'}}> → </span>{renderInlineCell(item,'price_rocket',item.price_rocket,false,isE,{color:getDiffColor(item.prevRocket,isE?editRow.price_rocket:item.price_rocket)})}</>}</td>
+                        <td style={tdStyle}>{isGhost?<span style={{color:GHOST_COLOR}}>-</span>:<><span style={{color:'#222'}}>{(item.prevGold||0).toLocaleString()}</span><span style={{color:'#999'}}> → </span>{renderInlineCell(item,'price_gold',item.price_gold,false,isE,{color:getDiffColor(item.prevGold,isE?editRow.price_gold:item.price_gold)})}</>}</td>
                         <td style={{...tdStyle,background:isE?'#fff9f9':'inherit'}}>{isGhost?<span style={{color:GHOST_COLOR}}>-</span>:<><span style={{color:'#222'}}>{prevS.toLocaleString()}</span><span style={{color:'#999'}}> → </span>{renderInlineCell(item,'price_sale',item.price_sale,false,isE,{color:getDiffColor(prevS,isE?editRow.price_sale:item.price_sale),width:'60px'})}{!isE&&<span style={{fontSize:'10px',color:'#999',marginLeft:'2px'}}>({item.discSale}%)</span>}</>}</td>
                         <td style={tdStyle}>{isGhost ? <span style={{color:GHOST_COLOR}}>-</span> : Math.floor(curS * (feeRate / 100)).toLocaleString()}</td>
                         <td style={{...tdStyle, fontWeight: isGhost ? 'normal' : 'bold'}}>{isGhost ? <span style={{color:GHOST_COLOR}}>-</span> : (curS - Math.floor(curS * (feeRate / 100))).toLocaleString()}</td>
