@@ -9,6 +9,49 @@ const cleanStr = (s) => String(s || "").replace(/\s+/g, '').toUpperCase();
 // 💡 브랜드와 품번을 결합하여 고유한 키를 만드는 함수
 const makeKey = (brand, code) => `${brand}|||${code}`;
 
+// 💡 바코드 정규화: 세대 구분자(3/7)와 색상+사이즈 접미사 제거
+// 예) MW3EBWPL84BK064 → MWEBWPL84
+// 예) MW7EBWPL841BK064 → MWEBWPL841 (리오더, 숫자 확장)
+const normalizeBarcode = (code) => {
+  let s = cleanStr(code);
+  // 끝 색상+사이즈 제거: 영문2자+숫자3자 (예: BK064, NA095, CH110)
+  s = s.replace(/[A-Z]{2}\d{3}$/, '');
+  // 초기 알파벳 뒤 세대숫자(3 또는 7) 제거
+  s = s.replace(/^([A-Z]+)[37]/, '$1');
+  return s;
+};
+
+// 💡 두 코드가 동일 상품인지 비교 (리오더 숫자 확장 포함)
+// MW3EBWPL84... 와 MW7EBWPL841... → 정규화 후 MWEBWPL84 / MWEBWPL841 → 짧은쪽이 긴쪽의 접두사면 동일
+const codesMatch = (a, b) => {
+  if (!a || !b) return false;
+  const na = normalizeBarcode(a);
+  const nb = normalizeBarcode(b);
+  if (!na || !nb) return false;
+  if (na === nb) return true;
+  const shorter = na.length <= nb.length ? na : nb;
+  const longer  = na.length <= nb.length ? nb : na;
+  return longer.startsWith(shorter) && (longer.length - shorter.length) <= 1;
+};
+
+// 💡 바코드로 DB 상품 검색 (style_no → barcode 저장목록 → code 순서로 시도)
+const findProductByBarcode = (barcode, allProducts) => {
+  if (!barcode) return null;
+  const bc = cleanStr(barcode);
+  if (!bc || bc.length < 4) return null;
+  // 1. style_no 매핑
+  let p = allProducts.find(p => p.style_no && codesMatch(p.style_no, bc));
+  if (p) return p;
+  // 2. 저장된 barcode 목록 매핑
+  p = allProducts.find(p =>
+    String(p.barcode || '').split(',').map(cleanStr).some(b => b && codesMatch(b, bc))
+  );
+  if (p) return p;
+  // 3. code 직접 매핑
+  p = allProducts.find(p => p.code && codesMatch(p.code, bc));
+  return p || null;
+};
+
 function App() {
   // ==========================================
   // 1. 상태 관리
@@ -629,96 +672,74 @@ function App() {
   const handleInventoryExcelUpload = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
-    
+
     const reader = new FileReader();
     reader.onload = async (ev) => {
       try {
         const workbook = XLSX.read(ev.target.result, { type: 'binary' });
         const sheet = workbook.Sheets[workbook.SheetNames[0]];
         const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
-        
+
+        // 헤더 행 탐색: 바코드 + 합재고 컬럼 필요
         let headerRowIndex = -1;
-        let cIdx=-1, xIdx=-1, lIdx=-1, pIdx=-1, rIdx=-1, tIdx=-1, vIdx=-1;
-        
-        for (let i = 0; i < Math.min(15, rows.length); i++) {
+        let bcIdx = -1, stockIdx = -1;
+
+        for (let i = 0; i < Math.min(20, rows.length); i++) {
           const row = rows[i];
-          if (!row || !Array.isArray(row)) continue;
-          
-          const foundC = row.findIndex(cell => cleanStr(cell) === "상품코드");
-          const foundX = row.findIndex(cell => cleanStr(cell) === "합재고");
-          if (foundC !== -1 && foundX !== -1) {
-             headerRowIndex = i;
-             cIdx = foundC; xIdx = foundX;
-             lIdx = row.findIndex(cell => cleanStr(cell) === "바코드");
-             pIdx = row.findIndex(cell => cleanStr(cell).includes("옵션별칭1"));
-             rIdx = row.findIndex(cell => cleanStr(cell).includes("옵션별칭2"));
-             tIdx = row.findIndex(cell => cleanStr(cell).includes("옵션별칭3"));
-             vIdx = row.findIndex(cell => cleanStr(cell).includes("옵션별칭4"));
-             break;
+          if (!Array.isArray(row)) continue;
+          const fBc    = row.findIndex(c => cleanStr(c) === '바코드');
+          const fStock = row.findIndex(c => cleanStr(c) === '합재고');
+          if (fBc !== -1 && fStock !== -1) {
+            headerRowIndex = i;
+            bcIdx = fBc;
+            stockIdx = fStock;
+            break;
           }
         }
+        if (headerRowIndex === -1) return alert("❌ '바코드' 또는 '합재고' 컬럼을 찾지 못했습니다.");
 
-        if (headerRowIndex === -1) return alert("❌ '상품코드' 또는 '합재고' 항목을 찾지 못했습니다.");
-
-        const stockMap = {}; 
-        const barcodeMap = {}; 
         const allProducts = [...masterProducts, ...groups];
+        const stockMap = {};   // mainKey → 합재고 합산
+        const barcodeMap = {}; // mainKey → Set<바코드>
+        let matched = 0, unmatched = 0;
 
         for (let i = headerRowIndex + 1; i < rows.length; i++) {
           const row = rows[i];
-          if (!row || !Array.isArray(row)) continue;
+          if (!Array.isArray(row)) continue;
 
-          let cValue = cleanStr(row[cIdx]);
-          if (cValue.includes('-')) {
-              cValue = cValue.split('-')[0];
-          }
+          const bc = cleanStr(row[bcIdx]);
+          const qty = Number(String(row[stockIdx] || '0').replace(/,/g, '')) || 0;
+          if (!bc || bc === '바코드') continue;
 
-          const xValue = Number(String(row[xIdx] || "0").replace(/,/g, '')) || 0; 
-
-          if (cValue && cValue !== "상품코드") {
-            const targetProduct = allProducts.find(p => cleanStr(p.code) === cValue);
-
-            if (targetProduct) {
-              const mainKey = makeKey(targetProduct.brand, targetProduct.code);
-              stockMap[mainKey] = (stockMap[mainKey] || 0) + xValue; 
-              
-              if (!barcodeMap[mainKey]) barcodeMap[mainKey] = new Set();
-              
-              [lIdx, pIdx, rIdx, tIdx, vIdx].forEach(idx => {
-                  if (idx !== -1) {
-                      const val = cleanStr(row[idx]);
-                      if (val && val !== "0" && val !== "-") barcodeMap[mainKey].add(val);
-                  }
-              });
-            }
+          const product = findProductByBarcode(bc, allProducts);
+          if (product) {
+            const key = makeKey(product.brand, product.code);
+            stockMap[key] = (stockMap[key] || 0) + qty;
+            if (!barcodeMap[key]) barcodeMap[key] = new Set();
+            barcodeMap[key].add(bc);
+            matched++;
+          } else {
+            unmatched++;
           }
         }
 
-        const updatePromises = [];
-        let updatedCount = 0;
-
+        const updates = [];
         for (const [key, stockVal] of Object.entries(stockMap)) {
           const [b, c] = key.split('|||');
-          const isGroup = groups.some(g => g.code === c && g.brand === b);
-          const targetTable = isGroup ? 'groups' : 'master_products';
-
-          const newBarcodeStr = Array.from(barcodeMap[key] || []).filter(Boolean).join(',');
-          
-          updatePromises.push(
-            supabase.from(targetTable).update({ stock: stockVal, barcode: newBarcodeStr }).eq('code', c).eq('brand', b)
-          );
-          updatedCount++;
+          const tbl = groups.some(g => g.code === c && g.brand === b) ? 'groups' : 'master_products';
+          const barcodeStr = Array.from(barcodeMap[key] || []).join(',');
+          updates.push(supabase.from(tbl).update({ stock: stockVal, barcode: barcodeStr }).eq('code', c).eq('brand', b));
         }
-        await Promise.all(updatePromises);
-        alert(`📦 온라인재고 갱신 완료!\n\n✅ 메인코드 통합 업데이트: ${updatedCount}건`);
+        await Promise.all(updates);
+        alert(`📦 온라인재고 갱신 완료!\n✅ 매핑된 바코드: ${matched}건\n✅ 갱신 품번: ${updates.length}건\n❌ 미매핑: ${unmatched}건`);
         fetchData();
-      } catch (err) { 
+      } catch (err) {
         console.error(err);
-        alert("❌ 재고 엑셀 처리 중 오류가 발생했습니다."); 
+        alert("❌ 재고 엑셀 처리 중 오류가 발생했습니다.");
       }
     };
     reader.readAsBinaryString(file);
-    e.target.value = null; 
+    e.target.value = null;
   };
 
   const handleHqStockExcelUpload = async (e) => {
@@ -730,48 +751,62 @@ function App() {
       try {
         const workbook = XLSX.read(ev.target.result, { type: 'binary' });
         const sheet = workbook.Sheets[workbook.SheetNames[0]];
-        const rows = XLSX.utils.sheet_to_json(sheet, { header: "A", defval: "" });
+        // header:1 로 배열 파싱해서 헤더 행 직접 찾기
+        const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
 
-        const hqMap = {}; 
-        let matchedCount = 0;
-        let unmatchedCount = 0;
+        // 헤더 행에서 '상품바코드'와 재고수량 컬럼 위치 탐색
+        let headerRowIndex = -1;
+        let bcIdx = -1, qtyIdx = -1;
 
-        const allProducts = [...masterProducts, ...groups];
-
-        rows.forEach(row => {
-          const cValue = cleanStr(row["C"]);
-          const nValue = Number(String(row["N"] || "0").replace(/,/g, '')) || 0;
-
-          if (cValue && !cValue.includes("상품바코드") && !cValue.includes("기본항목")) {
-            let targetProduct = allProducts.find(p => {
-              const bArray = String(p.barcode || "").split(',').map(cleanStr);
-              return bArray.includes(cValue) || cleanStr(p.code) === cValue;
-            });
-
-            if (targetProduct) {
-              const mainKey = makeKey(targetProduct.brand, targetProduct.code);
-              hqMap[mainKey] = (hqMap[mainKey] || 0) + nValue;
-              matchedCount++;
-            } else {
-              unmatchedCount++; 
-            }
+        for (let i = 0; i < Math.min(20, rows.length); i++) {
+          const row = rows[i];
+          if (!Array.isArray(row)) continue;
+          const fBc  = row.findIndex(c => cleanStr(c).includes('상품바코드'));
+          // 재고수량 컬럼: '재고수' 또는 컬럼 N(인덱스13) 시도
+          const fQty = row.findIndex(c => cleanStr(c).includes('재고수') || cleanStr(c).includes('수량'));
+          if (fBc !== -1) {
+            headerRowIndex = i;
+            bcIdx = fBc;
+            qtyIdx = fQty !== -1 ? fQty : 13; // fallback: 14번째 열
+            break;
           }
-        });
-
-        const updatePromises = [];
-        let updatedDbCount = 0;
-
-        for (const [key, stockVal] of Object.entries(hqMap)) {
-          const [b, c] = key.split('|||');
-          const isGroup = groups.some(g => g.code === c && g.brand === b);
-          const targetTable = isGroup ? 'groups' : 'master_products';
-
-          updatePromises.push(supabase.from(targetTable).update({ hq_stock: stockVal }).eq('code', c).eq('brand', b));
-          updatedDbCount++;
+        }
+        // 헤더를 못 찾으면 고정 컬럼(C=2, N=13) 사용
+        if (headerRowIndex === -1) {
+          headerRowIndex = 0;
+          bcIdx = 2;
+          qtyIdx = 13;
         }
 
-        await Promise.all(updatePromises);
-        alert(`🏢 본사재고 매핑 완료!\n\n✅ 일치하여 수량 반영된 바코드: ${matchedCount}건\n✅ DB 갱신된 메인코드 수: ${updatedDbCount}품번\n❌ 무시된 타상품/미등록 바코드: ${unmatchedCount}건`);
+        const allProducts = [...masterProducts, ...groups];
+        const hqMap = {};
+        let matched = 0, unmatched = 0;
+
+        for (let i = headerRowIndex + 1; i < rows.length; i++) {
+          const row = rows[i];
+          if (!Array.isArray(row)) continue;
+          const bc  = cleanStr(row[bcIdx]);
+          const qty = Number(String(row[qtyIdx] || '0').replace(/,/g, '')) || 0;
+          if (!bc || bc.length < 4) continue;
+
+          const product = findProductByBarcode(bc, allProducts);
+          if (product) {
+            const key = makeKey(product.brand, product.code);
+            hqMap[key] = (hqMap[key] || 0) + qty;
+            matched++;
+          } else {
+            unmatched++;
+          }
+        }
+
+        const updates = [];
+        for (const [key, stockVal] of Object.entries(hqMap)) {
+          const [b, c] = key.split('|||');
+          const tbl = groups.some(g => g.code === c && g.brand === b) ? 'groups' : 'master_products';
+          updates.push(supabase.from(tbl).update({ hq_stock: stockVal }).eq('code', c).eq('brand', b));
+        }
+        await Promise.all(updates);
+        alert(`🏢 본사재고 매핑 완료!\n✅ 매핑된 바코드: ${matched}건\n✅ 갱신 품번: ${updates.length}건\n❌ 미매핑: ${unmatched}건`);
         fetchData();
       } catch (err) {
         console.error(err);
@@ -779,7 +814,7 @@ function App() {
       }
     };
     reader.readAsBinaryString(file);
-    e.target.value = null; 
+    e.target.value = null;
   };
 
   const handleOrderExcelUpload = async (e) => {
@@ -791,68 +826,72 @@ function App() {
       try {
         const workbook = XLSX.read(ev.target.result, { type: 'binary' });
         const sheet = workbook.Sheets[workbook.SheetNames[0]];
-        const rows = XLSX.utils.sheet_to_json(sheet, { header: "A", defval: "" });
+        const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
 
-        const orderMap = {}; 
-        let matchedCount = 0;
-        let unmatchedCount = 0;
+        // 헤더 행 탐색: '상품명' 컬럼 + 주차 컬럼 찾기
+        let headerRowIndex = -1;
+        let nameIdx = -1, w1Idx = -1, w2Idx = -1, w3Idx = -1;
+
+        for (let i = 0; i < Math.min(20, rows.length); i++) {
+          const row = rows[i];
+          if (!Array.isArray(row)) continue;
+          const fName = row.findIndex(c => cleanStr(c).includes('상품명'));
+          if (fName !== -1) {
+            headerRowIndex = i;
+            nameIdx = fName;
+            // 주차별 발주수량: 1단계/2단계/3단계 컬럼 탐색
+            w1Idx = row.findIndex(c => cleanStr(c).includes('1단계') || cleanStr(c).includes('1주'));
+            w2Idx = row.findIndex(c => cleanStr(c).includes('2단계') || cleanStr(c).includes('2주'));
+            w3Idx = row.findIndex(c => cleanStr(c).includes('3단계') || cleanStr(c).includes('3주'));
+            break;
+          }
+        }
+        // fallback: 고정 컬럼 (A=0, K=10, L=11, M=12)
+        if (headerRowIndex === -1) { headerRowIndex = 0; nameIdx = 0; }
+        if (w1Idx === -1) w1Idx = 10;
+        if (w2Idx === -1) w2Idx = 11;
+        if (w3Idx === -1) w3Idx = 12;
 
         const allProducts = [...masterProducts, ...groups];
+        const orderMap = {};
+        let matched = 0, unmatched = 0;
 
-        rows.forEach(row => {
-          const aValue = String(row["A"] || ""); 
-          const kValue = Number(String(row["K"]||"0").replace(/,/g, '')) || 0; 
-          const lValue = Number(String(row["L"]||"0").replace(/,/g, '')) || 0; 
-          const mValue = Number(String(row["M"]||"0").replace(/,/g, '')) || 0; 
+        for (let i = headerRowIndex + 1; i < rows.length; i++) {
+          const row = rows[i];
+          if (!Array.isArray(row)) continue;
 
-          let styleCode = "";
-          const match = aValue.match(/\(([^)]+)\)/);
-          if (match) {
-            styleCode = cleanStr(match[1]);
+          const nameVal = String(row[nameIdx] || '');
+          const w1 = Number(String(row[w1Idx] || '0').replace(/,/g, '')) || 0;
+          const w2 = Number(String(row[w2Idx] || '0').replace(/,/g, '')) || 0;
+          const w3 = Number(String(row[w3Idx] || '0').replace(/,/g, '')) || 0;
+          if (w1 === 0 && w2 === 0 && w3 === 0) continue;
+
+          // 상품명 안 마지막 괄호 () 안의 코드 추출
+          const allMatches = [...nameVal.matchAll(/\(([^)]+)\)/g)];
+          const bc = allMatches.length > 0 ? cleanStr(allMatches[allMatches.length - 1][1]) : '';
+          if (!bc || bc.length < 4) { unmatched++; continue; }
+
+          const product = findProductByBarcode(bc, allProducts);
+          if (product) {
+            const key = makeKey(product.brand, product.code);
+            if (!orderMap[key]) orderMap[key] = { w1: 0, w2: 0, w3: 0 };
+            orderMap[key].w1 += w1;
+            orderMap[key].w2 += w2;
+            orderMap[key].w3 += w3;
+            matched++;
           } else {
-            styleCode = cleanStr(aValue);
+            unmatched++;
           }
-
-          if (styleCode && styleCode.length > 2 && !styleCode.includes("상품명")) {
-            let targetProduct = allProducts.find(p => {
-              const bArray = String(p.barcode || "").split(',').map(cleanStr);
-              return bArray.includes(styleCode) || cleanStr(p.code) === styleCode;
-            });
-
-            if (targetProduct) {
-              const mainKey = makeKey(targetProduct.brand, targetProduct.code);
-              if (!orderMap[mainKey]) orderMap[mainKey] = { w1: 0, w2: 0, w3: 0 };
-              
-              orderMap[mainKey].w1 += kValue;
-              orderMap[mainKey].w2 += lValue;
-              orderMap[mainKey].w3 += mValue;
-              matchedCount++;
-            } else {
-              unmatchedCount++;
-            }
-          }
-        });
-
-        const updatePromises = [];
-        let updatedDbCount = 0;
-
-        for (const [key, orders] of Object.entries(orderMap)) {
-          const [b, c] = key.split('|||');
-          const isGroup = groups.some(g => g.code === c && g.brand === b);
-          const targetTable = isGroup ? 'groups' : 'master_products';
-
-          updatePromises.push(
-            supabase.from(targetTable).update({
-              order_w1: orders.w1,
-              order_w2: orders.w2,
-              order_w3: orders.w3
-            }).eq('code', c).eq('brand', b)
-          );
-          updatedDbCount++;
         }
 
-        await Promise.all(updatePromises);
-        alert(`🛒 발주 데이터 매핑 완료!\n\n✅ 일치하여 반영된 품번: ${matchedCount}건\n✅ DB 갱신된 메인코드 수: ${updatedDbCount}품번\n❌ 무시된 타상품: ${unmatchedCount}건`);
+        const updates = [];
+        for (const [key, orders] of Object.entries(orderMap)) {
+          const [b, c] = key.split('|||');
+          const tbl = groups.some(g => g.code === c && g.brand === b) ? 'groups' : 'master_products';
+          updates.push(supabase.from(tbl).update({ order_w1: orders.w1, order_w2: orders.w2, order_w3: orders.w3 }).eq('code', c).eq('brand', b));
+        }
+        await Promise.all(updates);
+        alert(`🛒 발주 매핑 완료!\n✅ 매핑된 행: ${matched}건\n✅ 갱신 품번: ${updates.length}건\n❌ 미매핑: ${unmatched}건`);
         fetchData();
       } catch (err) {
         console.error(err);
