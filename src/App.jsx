@@ -72,6 +72,19 @@ function App() {
     }
   };
 
+  // 고정비 설정 (localStorage 저장)
+  const [fixedCost, setFixedCost] = useState(() => Number(localStorage.getItem('fixedCost') ?? 5000));
+  const [fixedCostInput, setFixedCostInput] = useState(() => String(localStorage.getItem('fixedCost') ?? '5000'));
+
+  const handleFixedCostChange = (val) => {
+    setFixedCostInput(val);
+    const n = Number(val);
+    if (!isNaN(n) && n >= 0) {
+      setFixedCost(n);
+      localStorage.setItem('fixedCost', n);
+    }
+  };
+
   // ==========================================
   // 2. 초기 데이터 로드
   // ==========================================
@@ -192,7 +205,7 @@ function App() {
        
        const cost = Number(calcItem.cost || 0);
        const sale = Number(calcItem.price_sale || 0);
-       calcItem.margin = (sale - Math.floor(sale * (feeRate / 100))) - cost - 5000;
+       calcItem.margin = (sale - Math.floor(sale * (feeRate / 100))) - cost - fixedCost;
 
        return calcItem;
     });
@@ -259,9 +272,9 @@ function App() {
       const fee = Math.floor(sale * (feeRate / 100));
       const settle = sale - fee;
       const pSale = Number(item.prev_sale || item.price_sale || 0);
-      const pMargin = (pSale - Math.floor(pSale * (feeRate / 100))) - cost - 5000;
+      const pMargin = (pSale - Math.floor(pSale * (feeRate / 100))) - cost - fixedCost;
       const discSale = tag === 0 ? 0 : Math.round((1 - (sale / tag)) * 100);
-      const margin = (sale - fee) - cost - 5000;
+      const margin = (sale - fee) - cost - fixedCost;
       return {
         ...item, fee, settle, prevMargin: pMargin, margin,
         ratio: cost > 0 ? (sale / cost).toFixed(1) : "0.0", discSale
@@ -278,7 +291,7 @@ function App() {
       if (quickFilter === 'has-order') return (Number(item.order_w1||0)+Number(item.order_w2||0)+Number(item.order_w3||0)) > 0;
       return true;
     });
-  }, [masterProducts, groups, filterCategory, filterBrand, filterSeason, searchTerm, sortConfig, marginFilter, quickFilter, feeRate]);
+  }, [masterProducts, groups, filterCategory, filterBrand, filterSeason, searchTerm, sortConfig, marginFilter, quickFilter, feeRate, fixedCost]);
 
   const visibleData = useMemo(() => {
     return processedData.filter(item => {
@@ -510,7 +523,7 @@ function App() {
     const dataToExport = src.map(item => {
       const curS = Number(item.price_sale || 0);
       const cost = Number(item.cost || 0);
-      const margin = (curS - Math.floor(curS * (feeRate / 100))) - cost - 5000;
+      const margin = (curS - Math.floor(curS * (feeRate / 100))) - cost - fixedCost;
 
       return {
         "구분": item.type, "품번": item.code, "브랜드": item.brand || '', "시즌": item.season || '',
@@ -1080,6 +1093,15 @@ function App() {
                     style={{width:'42px', fontSize:'12px', fontWeight:'bold', textAlign:'center', border:'1px solid #f0c040', borderRadius:'4px', padding:'2px 4px'}}
                   />
                   <span style={{fontSize:'11px', fontWeight:'bold'}}>%</span>
+                </div>
+                <div style={{display:'flex', alignItems:'center', gap:'4px', background:'#fef0f0', padding:'4px 10px', borderRadius:'6px', border:'1px solid #f5c0c0'}}>
+                  <span style={{fontSize:'11px', fontWeight:'bold', whiteSpace:'nowrap'}}>📦 고정비</span>
+                  <input
+                    type="number" value={fixedCostInput} min="0" step="100"
+                    onChange={e => handleFixedCostChange(e.target.value)}
+                    style={{width:'60px', fontSize:'12px', fontWeight:'bold', textAlign:'center', border:'1px solid #f5c0c0', borderRadius:'4px', padding:'2px 4px'}}
+                  />
+                  <span style={{fontSize:'11px', fontWeight:'bold'}}>원</span>
                 </div>
               </div>
             </div>
