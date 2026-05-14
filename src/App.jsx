@@ -260,7 +260,7 @@ function App() {
             brand: liveChild.brand || item.brand,
             season: liveChild.season || item.season,
             category: liveChild.category || item.category,
-            type: parentIsSet ? `ㄴ${liveChild.code}(구성)` : 'ㄴ 구성',
+            type: parentIsSet ? `ㄴ${item.code}(구성)` : 'ㄴ 구성',
             isMappedChild: true,
             parentIsSet,
             parentCode: item.code,
