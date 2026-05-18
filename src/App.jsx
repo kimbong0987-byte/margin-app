@@ -632,6 +632,35 @@ function App() {
     XLSX.writeFile(wb, "MD_라인시트_데이터.xlsx");
   };
 
+  // 가격/기본수정 업로드용 양식 다운로드 (현재 조회 데이터 기준, 가격컬럼만 포함)
+  const downloadPriceTemplate = () => {
+    const src = processedData.filter(item => !item.isMappedChild);
+    const data = src.map(item => ({
+      "품번": item.code,
+      "브랜드": item.brand || '',
+      "시즌": item.season || '',
+      "복종": item.category || '',
+      "스타일코드": item.style_no || '',
+      "상품명": item.name || '',
+      "원가": item.cost || 0,
+      "Tag가": item.tag_price || 0,
+      "네이버(변경)": item.price_naver || 0,
+      "쿠팡(변경)": item.price_coupang || 0,
+      "로켓(변경)": item.price_rocket || 0,
+      "골드(변경)": item.price_gold || 0,
+      "행사가(변경)": item.price_sale || 0,
+    }));
+    const ws = XLSX.utils.json_to_sheet(data);
+    // 컬럼 너비 설정
+    ws['!cols'] = [
+      {wch:10},{wch:10},{wch:8},{wch:8},{wch:16},{wch:30},
+      {wch:8},{wch:8},{wch:10},{wch:10},{wch:10},{wch:10},{wch:10}
+    ];
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "가격수정양식");
+    XLSX.writeFile(wb, "가격기본수정_양식.xlsx");
+  };
+
   const applyListExcelUpload = async (rows) => {
     const updatePromises = [];
     for(const r of rows) {
@@ -1395,6 +1424,7 @@ function App() {
                 <button onClick={handleCollapseAll} style={{padding:'6px 10px', background:'#7f8c8d', color:'#fff', border:'none', borderRadius:'4px', fontSize:'11px', cursor:'pointer', fontWeight:'bold'}}>▶ 전체닫기</button>
                 <div style={{width:'1px', background:'#ddd', margin:'0 2px'}}></div>
                 <button onClick={downloadListExcel} style={{padding:'6px 10px', background:'#27ae60', color:'#fff', border:'none', borderRadius:'4px', fontSize:'11px', cursor:'pointer', fontWeight:'bold'}}>📄 {selectedCodes.length > 0 ? "선택 엑셀" : "전체 엑셀"}</button>
+                <button onClick={downloadPriceTemplate} style={{padding:'6px 10px', background:'#8e44ad', color:'#fff', border:'none', borderRadius:'4px', fontSize:'11px', cursor:'pointer', fontWeight:'bold'}}>📋 가격양식 다운</button>
                 <label style={{fontSize:'11px', display:'flex', alignItems:'center', gap:'5px', cursor:'pointer', background:'#f8f9fa', padding:'4px 8px', borderRadius:'4px', border:'1px solid #ddd'}}>
                   📁 가격/기본수정
                   <input type="file" onChange={handleListExcelUpload} style={{display:'none'}} />
