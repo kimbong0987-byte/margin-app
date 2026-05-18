@@ -255,18 +255,23 @@ function App() {
     const matchedGroups = groups.filter(isMatch).map(g => ({ ...g, type: g.type || '묶음' }));
     const matchedSingles = masterProducts.filter(isMatch).map(p => ({ ...p, type: '단품' }));
 
-    // 묶음/세트 자식으로 매핑된 품번은 별도 단품 행 없음
-    const matchedMappedCodes = new Set();
+    // 묶음 자식 → 단품 행 없음 / 세트 자식(묶음에도 없는 경우) → 단품 행 있음
+    const bundleChildCodes = new Set();  // 묶음 자식
+    const setChildCodes = new Set();     // 세트 자식
     matchedGroups.forEach(g => {
-      if (g.children) {
-        g.children.forEach(c => {
-          const childKey = makeKey(g.brand, c.code);
-          if (masterMap.has(childKey)) matchedMappedCodes.add(childKey);
-        });
-      }
+      const typeStr = String(g.type || '');
+      if (!g.children) return;
+      g.children.forEach(c => {
+        const childKey = makeKey(g.brand, c.code);
+        if (!masterMap.has(childKey)) return;
+        if (typeStr.includes('묶음')) bundleChildCodes.add(childKey);
+        else if (typeStr.includes('세트')) setChildCodes.add(childKey);
+      });
     });
-
-    const standaloneSingles = matchedSingles.filter(s => !matchedMappedCodes.has(makeKey(s.brand, s.code)));
+    // 묶음 자식 → 단품 행 없음 / 세트 자식(묶음에 없는 경우) → 단품 행 유지
+    const standaloneSingles = matchedSingles.filter(s =>
+      !bundleChildCodes.has(makeKey(s.brand, s.code))
+    );
     let topLevel = [...matchedGroups, ...standaloneSingles];
 
     topLevel = topLevel.map(item => {
