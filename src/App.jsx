@@ -619,13 +619,16 @@ function App() {
       const curS = Number(item.price_sale || 0);
       const cost = Number(item.cost || 0);
       const margin = (curS - Math.floor(curS * (feeRate / 100))) - cost - fixedCost;
-
+      // 이전가: processedData에서 이미 계산된 prev 값 사용
       return {
         "구분": item.type, "품번": item.code, "브랜드": item.brand || '', "시즌": item.season || '',
         "복종": item.category || '', "스타일코드": item.style_no || '', "상품명": item.name || '',
         "원가": item.cost || 0, "Tag가": item.tag_price || 0,
-        "네이버(변경)": item.price_naver || 0, "쿠팡(변경)": item.price_coupang || 0, 
-        "로켓(변경)": item.price_rocket || 0, "골드(변경)": item.price_gold || 0, "행사가(변경)": item.price_sale || 0,
+        "네이버(이전)": item.prevNaver || 0, "네이버(변경)": item.price_naver || 0,
+        "쿠팡(이전)": item.prevCoupang || 0, "쿠팡(변경)": item.price_coupang || 0,
+        "로켓(이전)": item.prevRocket || 0, "로켓(변경)": item.price_rocket || 0,
+        "골드(이전)": item.prevGold || 0, "골드(변경)": item.price_gold || 0,
+        "행사가(이전)": item.prevSale || 0, "행사가(변경)": item.price_sale || 0,
         "마진": margin,
         "온라인재고": item.stock || 0, "본사재고": item.hq_stock || 0,
         "1주발주": item.order_w1 || 0, "2주발주": item.order_w2 || 0, "3주발주": item.order_w3 || 0
@@ -644,22 +647,33 @@ function App() {
     const allP = [...masterProducts, ...groups];
     const src = allP.filter(p => cleanStr(p.brand) === cleanStr(priceTemplateBrand));
     if (!src.length) { alert('해당 브랜드 상품이 없습니다.'); return; }
-    const data = src.map(item => ({
-      "브랜드": item.brand || '',
-      "품번": item.code,
-      "복종": item.category || '',
-      "스타일코드": item.style_no || '',
-      "상품명": item.name || '',
-      "원가": item.cost || 0,
-      "Tag가": item.tag_price || 0,
-      "네이버(변경)": item.price_naver || 0,
-      "쿠팡(변경)": item.price_coupang || 0,
-      "로켓(변경)": item.price_rocket || 0,
-      "골드(변경)": item.price_gold || 0,
-      "행사가(변경)": item.price_sale || 0,
-    }));
+    const data = src.map(item => {
+      const lp = localPrev[makeKey(item.brand, item.code)] || {};
+      const prevNaver   = Number(lp.price_naver   ?? item.price_naver   ?? 0);
+      const prevCoupang = Number(lp.price_coupang ?? item.price_coupang ?? 0);
+      const prevRocket  = Number(lp.price_rocket  ?? item.price_rocket  ?? 0);
+      const prevGold    = Number(lp.price_gold    ?? item.price_gold    ?? 0);
+      const prevSale    = Number(lp.price_sale    ?? item.price_sale    ?? 0);
+      return {
+        "브랜드": item.brand || '',
+        "품번": item.code,
+        "복종": item.category || '',
+        "스타일코드": item.style_no || '',
+        "상품명": item.name || '',
+        "원가": item.cost || 0,
+        "Tag가": item.tag_price || 0,
+        "네이버(이전)": prevNaver,   "네이버(변경)": item.price_naver || 0,
+        "쿠팡(이전)": prevCoupang,   "쿠팡(변경)": item.price_coupang || 0,
+        "로켓(이전)": prevRocket,    "로켓(변경)": item.price_rocket || 0,
+        "골드(이전)": prevGold,      "골드(변경)": item.price_gold || 0,
+        "행사가(이전)": prevSale,    "행사가(변경)": item.price_sale || 0,
+      };
+    });
     const ws = XLSX.utils.json_to_sheet(data);
-    ws['!cols'] = [{wch:10},{wch:10},{wch:8},{wch:16},{wch:30},{wch:8},{wch:8},{wch:10},{wch:10},{wch:10},{wch:10},{wch:10}];
+    ws['!cols'] = [
+      {wch:10},{wch:10},{wch:8},{wch:16},{wch:30},{wch:8},{wch:8},
+      {wch:10},{wch:10},{wch:10},{wch:10},{wch:10},{wch:10},{wch:10},{wch:10},{wch:10},{wch:10}
+    ];
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "가격수정양식");
     XLSX.writeFile(wb, `가격수정양식_${priceTemplateBrand}.xlsx`);
