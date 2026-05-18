@@ -666,7 +666,10 @@ function App() {
   };
 
   const applyListExcelUpload = async (rows) => {
+    const allProducts = [...masterProducts, ...groups];
+    const prevUpdates = {};
     const updatePromises = [];
+
     for(const r of rows) {
       const c = String(r["품번"] || "").trim();
       const b = String(r["브랜드"] || "").trim();
@@ -684,11 +687,31 @@ function App() {
       setNum("행사가(변경)", "price_sale");
       setNum("온라인재고", "stock"); setNum("본사재고", "hq_stock");
       setNum("1주발주", "order_w1"); setNum("2주발주", "order_w2"); setNum("3주발주", "order_w3");
+
       if (Object.keys(payload).length > 0) {
+        // 업로드 전 현재 가격을 localPrev에 저장 (이전가 표시용)
+        const cur = allProducts.find(p => String(p.code) === c && String(p.brand) === b);
+        if (cur) {
+          const key = makeKey(b, c);
+          const priceFields = ['price_naver','price_coupang','price_rocket','price_gold','price_sale'];
+          const snap = {};
+          priceFields.forEach(f => { if (f in payload) snap[f] = Number(cur[f] || 0); });
+          if (Object.keys(snap).length > 0) prevUpdates[key] = snap;
+        }
         updatePromises.push(supabase.from(tbl).update(payload).eq('code', c).eq('brand', b));
       }
     }
     await Promise.all(updatePromises);
+    // 이전가 상태 반영
+    if (Object.keys(prevUpdates).length > 0) {
+      setLocalPrev(prev => {
+        const next = { ...prev };
+        Object.entries(prevUpdates).forEach(([key, snap]) => {
+          next[key] = { ...(next[key] || {}), ...snap };
+        });
+        return next;
+      });
+    }
     alert("✅ 엑셀 일괄 수정 업로드 완료!");
     fetchData();
   };
