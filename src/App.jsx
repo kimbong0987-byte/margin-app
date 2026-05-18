@@ -121,6 +121,7 @@ function App() {
     brand: '', season: '', type: '묶음', category: '', groupCode: '', styleNo: '', groupName: '', cost: '', tagPrice: '', children: [] 
   });
 
+  const [priceTemplateBrand, setPriceTemplateBrand] = useState('');
   const [isMobile, setIsMobile] = useState(window.innerWidth <= 768);
   const [collapsedGroups, setCollapsedGroups] = useState([]);
 
@@ -632,13 +633,15 @@ function App() {
     XLSX.writeFile(wb, "MD_라인시트_데이터.xlsx");
   };
 
-  // 가격/기본수정 업로드용 양식 다운로드 (현재 조회 데이터 기준, 가격컬럼만 포함)
+  // 가격/기본수정 업로드용 양식 다운로드 (선택 브랜드 기준, 부모행만)
   const downloadPriceTemplate = () => {
-    const src = processedData.filter(item => !item.isMappedChild);
+    if (!priceTemplateBrand) { alert('브랜드를 먼저 선택해주세요.'); return; }
+    const allP = [...masterProducts, ...groups];
+    const src = allP.filter(p => cleanStr(p.brand) === cleanStr(priceTemplateBrand));
+    if (!src.length) { alert('해당 브랜드 상품이 없습니다.'); return; }
     const data = src.map(item => ({
-      "품번": item.code,
       "브랜드": item.brand || '',
-      "시즌": item.season || '',
+      "품번": item.code,
       "복종": item.category || '',
       "스타일코드": item.style_no || '',
       "상품명": item.name || '',
@@ -651,14 +654,10 @@ function App() {
       "행사가(변경)": item.price_sale || 0,
     }));
     const ws = XLSX.utils.json_to_sheet(data);
-    // 컬럼 너비 설정
-    ws['!cols'] = [
-      {wch:10},{wch:10},{wch:8},{wch:8},{wch:16},{wch:30},
-      {wch:8},{wch:8},{wch:10},{wch:10},{wch:10},{wch:10},{wch:10}
-    ];
+    ws['!cols'] = [{wch:10},{wch:10},{wch:8},{wch:16},{wch:30},{wch:8},{wch:8},{wch:10},{wch:10},{wch:10},{wch:10},{wch:10}];
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "가격수정양식");
-    XLSX.writeFile(wb, "가격기본수정_양식.xlsx");
+    XLSX.writeFile(wb, `가격수정양식_${priceTemplateBrand}.xlsx`);
   };
 
   const applyListExcelUpload = async (rows) => {
@@ -669,23 +668,17 @@ function App() {
       if (!c || !b) continue;
       const tbl = groups.some(g=>g.code===c && g.brand===b) ? 'groups' : 'master_products';
       const payload = {};
-      if ("브랜드" in r) payload.brand = String(r["브랜드"]).trim();
-      if ("시즌" in r) payload.season = String(r["시즌"]).trim();
-      if ("복종" in r) payload.category = String(r["복종"]).trim();
-      if ("스타일코드" in r) payload.style_no = String(r["스타일코드"]).trim();
-      if ("상품명" in r) payload.name = String(r["상품명"]).trim();
-      if ("원가" in r) payload.cost = Number(String(r["원가"]).replace(/,/g,'') || 0);
-      if ("Tag가" in r) payload.tag_price = Number(String(r["Tag가"]).replace(/,/g,'') || 0);
-      if ("네이버(변경)" in r) payload.price_naver = Number(String(r["네이버(변경)"]).replace(/,/g,'') || 0);
-      if ("쿠팡(변경)" in r) payload.price_coupang = Number(String(r["쿠팡(변경)"]).replace(/,/g,'') || 0);
-      if ("로켓(변경)" in r) payload.price_rocket = Number(String(r["로켓(변경)"]).replace(/,/g,'') || 0);
-      if ("골드(변경)" in r) payload.price_gold = Number(String(r["골드(변경)"]).replace(/,/g,'') || 0);
-      if ("행사가(변경)" in r) payload.price_sale = Number(String(r["행사가(변경)"]).replace(/,/g,'') || 0);
-      if ("온라인재고" in r) payload.stock = Number(String(r["온라인재고"]).replace(/,/g,'') || 0);
-      if ("본사재고" in r) payload.hq_stock = Number(String(r["본사재고"]).replace(/,/g,'') || 0);
-      if ("1주발주" in r) payload.order_w1 = Number(String(r["1주발주"]).replace(/,/g,'') || 0);
-      if ("2주발주" in r) payload.order_w2 = Number(String(r["2주발주"]).replace(/,/g,'') || 0);
-      if ("3주발주" in r) payload.order_w3 = Number(String(r["3주발주"]).replace(/,/g,'') || 0);
+      // 컬럼이 존재하고 셀값이 비어있지 않을 때만 업데이트
+      const setStr = (key, field) => { if (key in r && String(r[key]??'').trim() !== '') payload[field] = String(r[key]).trim(); };
+      const setNum = (key, field) => { const v = String(r[key]??'').trim(); if (key in r && v !== '') payload[field] = Number(v.replace(/,/g,'')); };
+      setStr("브랜드", "brand"); setStr("시즌", "season"); setStr("복종", "category");
+      setStr("스타일코드", "style_no"); setStr("상품명", "name");
+      setNum("원가", "cost"); setNum("Tag가", "tag_price");
+      setNum("네이버(변경)", "price_naver"); setNum("쿠팡(변경)", "price_coupang");
+      setNum("로켓(변경)", "price_rocket"); setNum("골드(변경)", "price_gold");
+      setNum("행사가(변경)", "price_sale");
+      setNum("온라인재고", "stock"); setNum("본사재고", "hq_stock");
+      setNum("1주발주", "order_w1"); setNum("2주발주", "order_w2"); setNum("3주발주", "order_w3");
       if (Object.keys(payload).length > 0) {
         updatePromises.push(supabase.from(tbl).update(payload).eq('code', c).eq('brand', b));
       }
@@ -1424,6 +1417,10 @@ function App() {
                 <button onClick={handleCollapseAll} style={{padding:'6px 10px', background:'#7f8c8d', color:'#fff', border:'none', borderRadius:'4px', fontSize:'11px', cursor:'pointer', fontWeight:'bold'}}>▶ 전체닫기</button>
                 <div style={{width:'1px', background:'#ddd', margin:'0 2px'}}></div>
                 <button onClick={downloadListExcel} style={{padding:'6px 10px', background:'#27ae60', color:'#fff', border:'none', borderRadius:'4px', fontSize:'11px', cursor:'pointer', fontWeight:'bold'}}>📄 {selectedCodes.length > 0 ? "선택 엑셀" : "전체 엑셀"}</button>
+                <select value={priceTemplateBrand} onChange={e => setPriceTemplateBrand(e.target.value)} style={{padding:'5px 6px', fontSize:'11px', borderRadius:'4px', border:'1px solid #8e44ad', color:'#8e44ad', fontWeight:'bold', cursor:'pointer'}}>
+                  <option value=''>브랜드 선택</option>
+                  {brands.map(b => <option key={b} value={b}>{b}</option>)}
+                </select>
                 <button onClick={downloadPriceTemplate} style={{padding:'6px 10px', background:'#8e44ad', color:'#fff', border:'none', borderRadius:'4px', fontSize:'11px', cursor:'pointer', fontWeight:'bold'}}>📋 가격양식 다운</button>
                 <label style={{fontSize:'11px', display:'flex', alignItems:'center', gap:'5px', cursor:'pointer', background:'#f8f9fa', padding:'4px 8px', borderRadius:'4px', border:'1px solid #ddd'}}>
                   📁 가격/기본수정
