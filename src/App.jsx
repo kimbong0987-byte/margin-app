@@ -43,11 +43,10 @@ const mwStyleMatch = (a, b) => {
   const pb = extractColorBase(stripBrandGen(b));
   // 양쪽 모두 색상 있으면 반드시 일치
   if (pa.color && pb.color && pa.color !== pb.color) return false;
-  // 베이스코드 비교: 리오더suffix 1자리 차이 허용
+  // 베이스코드 비교: 리오더suffix는 style_no(a) 쪽이 1자 길 때만 허용
+  // (MW3FMMOH821 style_no → MW7FMMOH82 바코드, suffix는 DB 쪽에만 있어야 함)
   if (pa.base === pb.base) return true;
-  const shorter = pa.base.length <= pb.base.length ? pa.base : pb.base;
-  const longer  = pa.base.length <= pb.base.length ? pb.base : pa.base;
-  if (longer.startsWith(shorter) && longer.length - shorter.length === 1) return true;
+  if (pa.base.length === pb.base.length + 1 && pa.base.startsWith(pb.base)) return true;
   return false;
 };
 
