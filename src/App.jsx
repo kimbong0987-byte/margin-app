@@ -886,7 +886,7 @@ function App() {
         }
 
         const allProducts = [...masterProducts, ...groups];
-        const stockMap = {}, barcodeMap = {};
+        const stockMap = {};
         let matched = 0, unmatched = 0;
 
         for (let i = dataStart; i < rows.length; i++) {
@@ -899,24 +899,10 @@ function App() {
                     : Number(String(rawQty || '0').replace(/[,=]/g, '')) || 0;
 
           const numCode = String(row[codeIdx] || '').trim();
-          const barcode = cleanStr(row[bcIdx]  || '');
-          const modelNo = cleanStr(row[modelIdx] || '');
+          if (!numCode) continue;
 
-          if (!numCode && !barcode) continue;
-
-          // 1순위: C열 상품코드 → DB product.code 직접 매핑
-          let product = allProducts.find(p => String(p.code) === numCode);
-
-          // 2순위: L열 바코드 뒤 3자리(사이즈) 제거 → 자식 style_no 매칭
-          if (!product && barcode.length > 3) {
-            const styleNoChild = barcode.slice(0, -3);
-            product = allProducts.find(p => p.style_no && mwStyleMatch(p.style_no, styleNoChild));
-          }
-
-          // 3순위: M열 모델NO → style_no 매칭
-          if (!product && modelNo) {
-            product = allProducts.find(p => p.style_no && mwStyleMatch(p.style_no, modelNo));
-          }
+          // C열 상품코드 → DB product.code 직접 매핑만 사용
+          const product = allProducts.find(p => String(p.code) === numCode);
 
           if (product) {
             // 자식이 있는 묶음/세트 부모는 직접 매핑 스킵 → processedData에서 자식 합계로 표시
@@ -924,14 +910,12 @@ function App() {
             if (isParentGroup) { matched++; continue; }
             const key = makeKey(product.brand, product.code);
             stockMap[key] = (stockMap[key] || 0) + qty;
-            if (!barcodeMap[key]) barcodeMap[key] = new Set();
-            if (barcode) barcodeMap[key].add(barcode);
             matched++;
           } else { unmatched++; }
         }
 
         await resetStockByBrandFilter(true); // 몽벨 온라인재고 전체 초기화 후 적용
-        const cnt = await applyStockUpdate(stockMap, barcodeMap, '몽벨 온라인재고');
+        const cnt = await applyStockUpdate(stockMap, {}, '몽벨 온라인재고');
         alert(`📦 몽벨 온라인재고 갱신 완료!\n✅ 매핑된 행: ${matched}건\n✅ 갱신 품번: ${cnt}건\n❌ 미매핑: ${unmatched}건`);
         fetchData();
       } catch (err) { console.error(err); alert("❌ 재고 엑셀 처리 중 오류가 발생했습니다."); }
