@@ -782,6 +782,8 @@ function App() {
   };
 
   // 라온팩토리 온라인재고: 시트 '재고코드관리_다운로드', 모델명 + 현재고(가용)
+  // 라온팩토리 온라인재고: 1행 헤더, F열(index5)=바코드, J열(index9)=총재고
+  // 바코드 뒤 3자리(사이즈코드) 제거 후 findProductByBarcode로 매핑
   const handleRaonInventoryExcelUpload = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
@@ -792,59 +794,30 @@ function App() {
         const wb = XLSX.read(ev.target.result, { type: 'binary' });
         const sheet = wb.Sheets[wb.SheetNames[0]];
         const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
+        if (rows.length < 2) return alert("❌ 데이터가 없습니다.");
 
-        // 헤더는 2행 구조 (row0: 대분류, row1: 소분류)
-        // 모델명: row0에서 찾기, 현재고(가용): row0의 현재고 위치에서 row1의 '가용' 찾기
-        let modelIdx = -1, stockIdx = -1, dataStart = -1;
-
-        for (let i = 0; i < Math.min(10, rows.length); i++) {
-          const r0 = rows[i];
-          if (!Array.isArray(r0)) continue;
-          const fModel = r0.findIndex(c => cleanStr(c) === '모델명');
-          if (fModel !== -1) {
-            modelIdx = fModel;
-            // 다음 행에서 현재고 가용 위치 찾기
-            const r1 = rows[i + 1] || [];
-            const fHq = r0.findIndex(c => cleanStr(c).includes('현재고'));
-            if (fHq !== -1) {
-              for (let j = fHq; j < Math.min(fHq + 5, r0.length); j++) {
-                if (cleanStr(r1[j] || '').includes('가용')) { stockIdx = j; break; }
-              }
-            }
-            // 현재고 못찾으면 row0에서 직접 시도
-            if (stockIdx === -1) {
-              stockIdx = r0.findIndex(c => cleanStr(c).includes('현재고') && cleanStr(c).includes('가용'));
-            }
-            dataStart = i + 2; // 대분류 + 소분류 헤더 이후부터 데이터
-            break;
-          }
-        }
-        if (modelIdx === -1) return alert("❌ '모델명' 컬럼을 찾지 못했습니다.");
-        if (stockIdx === -1) stockIdx = 17; // fallback
-        // 상품코드 컬럼 (숫자 코드 fallback용)
-        let codeIdx2 = -1;
-        if (rows[dataStart - 2]) {
-          codeIdx2 = rows[dataStart - 2].findIndex(c => cleanStr(c) === '상품코드');
-        }
+        // 헤더(row0)에서 컬럼 인덱스 확인, fallback으로 F(5)/J(9) 사용
+        const header = rows[0];
+        let barcodeIdx = header.findIndex(c => cleanStr(c) === '바코드');
+        let stockIdx   = header.findIndex(c => cleanStr(c) === '총재고');
+        if (barcodeIdx === -1) barcodeIdx = 5;
+        if (stockIdx   === -1) stockIdx   = 9;
 
         const allProducts = [...masterProducts, ...groups];
         const stockMap = {}, barcodeMap = {};
         let matched = 0, unmatched = 0;
 
-        for (let i = dataStart; i < rows.length; i++) {
+        for (let i = 1; i < rows.length; i++) {
           const row = rows[i];
           if (!Array.isArray(row)) continue;
-          const bc = cleanStr(row[modelIdx]);
+          const fullBarcode = cleanStr(row[barcodeIdx]);
+          if (!fullBarcode || fullBarcode.length < 4) continue;
+          // 뒤 3자리(사이즈코드) 제거
+          const bc = fullBarcode.slice(0, -3);
           const rawQty = row[stockIdx];
           const qty = typeof rawQty === 'number' ? rawQty : Number(String(rawQty || '0').replace(/,/g, '')) || 0;
-          if (!bc || bc.length < 4) continue;
 
-          let product = findProductByBarcode(bc, allProducts);
-          // 모델명 매핑 실패 시 상품코드 숫자 fallback
-          if (!product && codeIdx2 !== -1) {
-            const numCode = cleanStr(row[codeIdx2]);
-            if (numCode) product = allProducts.find(p => cleanStr(p.code) === numCode);
-          }
+          const product = findProductByBarcode(bc, allProducts);
           if (product) {
             const key = makeKey(product.brand, product.code);
             stockMap[key] = (stockMap[key] || 0) + qty;
