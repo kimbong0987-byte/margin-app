@@ -843,7 +843,7 @@ function App() {
           } else { unmatched++; }
         }
 
-        await resetStockByBrandFilter(false); // 라온팩토리(몽벨 제외) 온라인재고 전체 초기화 후 적용
+        await resetStockByBrandFilter(null); // 전체 온라인재고 0 초기화 (라온팩토리 파일이 전체 커버)
         const cnt = await applyStockUpdate(stockMap, barcodeMap, '라온팩토리 온라인재고');
         alert(`📦 라온팩토리 온라인재고 갱신 완료!\n✅ 매핑된 행: ${matched}건\n✅ 갱신 품번: ${cnt}건\n❌ 미매핑: ${unmatched}건`);
         fetchData();
@@ -1038,12 +1038,12 @@ function App() {
     await Promise.all(resets);
   };
 
-  // 특정 브랜드 범위의 온라인재고 전체 초기화 (업로드 전 선행)
+  // 온라인재고 전체 초기화 (isMontbell=true: 몽벨만, false: 비몽벨, null: 전체)
   const resetStockByBrandFilter = async (isMontbell) => {
     const allProducts = [...masterProducts, ...groups];
-    const targets = allProducts.filter(p =>
-      isMontbell ? cleanStr(p.brand) === '몽벨' : cleanStr(p.brand) !== '몽벨'
-    );
+    const targets = isMontbell === null
+      ? allProducts
+      : allProducts.filter(p => isMontbell ? cleanStr(p.brand) === '몽벨' : cleanStr(p.brand) !== '몽벨');
     const resets = targets.map(p => {
       const tbl = groups.some(g => g.code === p.code && g.brand === p.brand) ? 'groups' : 'master_products';
       return supabase.from(tbl).update({ stock: 0 }).eq('code', p.code).eq('brand', p.brand);
