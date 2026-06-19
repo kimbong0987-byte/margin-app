@@ -832,7 +832,9 @@ function App() {
           const rawQty = row[stockIdx];
           const qty = typeof rawQty === 'number' ? rawQty : Number(String(rawQty || '0').replace(/,/g, '')) || 0;
 
-          const product = findProductByBarcode(bc, allProducts);
+          // mwStyleMatch 1순위(색상 구분), findProductByBarcode fallback
+          let product = allProducts.find(p => p.style_no && mwStyleMatch(p.style_no, bc));
+          if (!product) product = findProductByBarcode(bc, allProducts);
           if (product) {
             const key = makeKey(product.brand, product.code);
             stockMap[key] = (stockMap[key] || 0) + qty;
@@ -1204,7 +1206,9 @@ function App() {
           }
           if (!bc || bc.length < 4) { unmatched++; continue; }
 
-          const product = findProductByBarcode(bc, allProducts);
+          // mwStyleMatch 1순위(색상 구분), findProductByBarcode fallback
+          let product = allProducts.find(p => p.style_no && mwStyleMatch(p.style_no, bc));
+          if (!product) product = findProductByBarcode(bc, allProducts);
           if (product) {
             const key = makeKey(product.brand, product.code);
             if (!orderMap[key]) orderMap[key] = { w1: 0, w2: 0, w3: 0 };
