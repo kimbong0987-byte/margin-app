@@ -1163,6 +1163,33 @@ function App() {
           if (nameIdx === -1) { nameIdx = 6; qtyIdx = 7; dataStart = 1; }
         }
 
+        // 달력 주(ISO week) 기준으로 날짜 → w1/w2/w3 매핑
+        const getISOWeek = (dateStr) => {
+          const d = new Date(String(dateStr));
+          if (isNaN(d)) return null;
+          const jan4 = new Date(d.getFullYear(), 0, 4);
+          const startOfWeek1 = new Date(jan4);
+          startOfWeek1.setDate(jan4.getDate() - ((jan4.getDay() + 6) % 7));
+          return Math.floor((d - startOfWeek1) / 604800000) + 1;
+        };
+
+        // 파일 내 날짜들의 최소 ISO주차 파악 → 상대 주차(0/1/2+) → w1/w2/w3
+        let minWeekNum = Infinity;
+        let minYear = Infinity;
+        for (let i = dataStart; i < rows.length; i++) {
+          const row = rows[i];
+          if (!Array.isArray(row)) continue;
+          const dateVal = String(row[isNewFormat ? 4 : 0] || '').trim();
+          if (!dateVal) continue;
+          const d = new Date(dateVal);
+          if (isNaN(d)) continue;
+          const wk = getISOWeek(dateVal);
+          if (wk !== null && (d.getFullYear() < minYear || (d.getFullYear() === minYear && wk < minWeekNum))) {
+            minYear = d.getFullYear(); minWeekNum = wk;
+          }
+        }
+        const dateColIdx = isNewFormat ? 4 : -1; // E열(4) = 발주일자 (신규 포맷만)
+
         const allProducts = [...masterProducts, ...groups];
         const orderMap = {};
         let matched = 0, unmatched = 0;
@@ -1173,14 +1200,24 @@ function App() {
           const qty = Number(String(row[qtyIdx] || '0').replace(/,/g, '')) || 0;
           if (qty === 0) continue;
 
+          // 주차 결정 (신규 포맷만 날짜 기반, 구형은 w1)
+          let weekKey = 'w1';
+          if (isNewFormat && dateColIdx !== -1) {
+            const dateVal = String(row[dateColIdx] || '').trim();
+            const d = new Date(dateVal);
+            if (!isNaN(d)) {
+              const wk = getISOWeek(dateVal);
+              const diff = (d.getFullYear() - minYear) * 52 + (wk - minWeekNum);
+              weekKey = diff <= 0 ? 'w1' : diff === 1 ? 'w2' : 'w3';
+            }
+          }
+
           let bc = '';
           if (isNewFormat) {
             // 1순위: raonSkuMap (재고양식 업로드 시 캐시된 SKU→바코드 맵)
             const sku = cleanStr(row[orderSkuIdx]);
-            if (sku && raonSkuMap[sku]) {
-              bc = raonSkuMap[sku];
-            }
-            // 2순위: 출고상품명 _ 뒤 스타일코드 추출 fallback
+            if (sku && raonSkuMap[sku]) bc = raonSkuMap[sku];
+            // 2순위: 출고상품명 _ 뒤 스타일코드 + 색상코드 추출 fallback
             if (!bc || bc.length < 4) {
               const nameVal = String(row[nameIdx] || '');
               const uIdx = nameVal.lastIndexOf('_');
@@ -1188,6 +1225,11 @@ function App() {
                 const after = nameVal.slice(uIdx + 1).trim();
                 const m = after.match(/^([A-Z0-9]+)/i);
                 bc = m ? cleanStr(m[1]) : '';
+                // 스타일코드 끝이 숫자면 색상코드 별도 추출: "[KHAKI] KH 095" 패턴
+                if (bc && /\d$/.test(bc)) {
+                  const colorM = after.match(/\[[^\]]+\]\s+([A-Z]{2})\b/);
+                  if (colorM) bc = bc + colorM[1];
+                }
               }
             }
           } else {
@@ -1212,7 +1254,7 @@ function App() {
           if (product) {
             const key = makeKey(product.brand, product.code);
             if (!orderMap[key]) orderMap[key] = { w1: 0, w2: 0, w3: 0 };
-            orderMap[key].w1 += qty;
+            orderMap[key][weekKey] += qty;
             matched++;
           } else { unmatched++; }
         }
