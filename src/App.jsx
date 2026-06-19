@@ -133,6 +133,8 @@ function App() {
 
   // 가격 변경 전 값 기록 (변경 시점마다 갱신)
   const [localPrev, setLocalPrev] = useState({});
+  // 라온팩토리 재고양식 업로드 시 SKU→바코드(사이즈제거) 맵 캐시 (발주핸들러 재사용)
+  const [raonSkuMap, setRaonSkuMap] = useState({});
 
   // 엑셀 업로드 신규 항목 확인 팝업
   const [pendingExcelUpload, setPendingExcelUpload] = useState(null); // { rows, newBrands, newCategories, newSeasons }
@@ -803,6 +805,19 @@ function App() {
         if (barcodeIdx === -1) barcodeIdx = 5;
         if (stockIdx   === -1) stockIdx   = 9;
 
+        // C열(index2) SKU코드 → F열 바코드(사이즈3자제거) 맵 구축 (발주핸들러 재사용)
+        const skuIdx = rows[0].findIndex(c => cleanStr(c) === '상품코드');
+        const skuColIdx = skuIdx !== -1 ? skuIdx : 2;
+        const newSkuMap = {};
+        for (let i = 1; i < rows.length; i++) {
+          const row = rows[i];
+          if (!Array.isArray(row)) continue;
+          const sku = cleanStr(row[skuColIdx]);
+          const fullBc = cleanStr(row[barcodeIdx]);
+          if (sku && fullBc && fullBc.length > 3) newSkuMap[sku] = fullBc.slice(0, -3);
+        }
+        setRaonSkuMap(newSkuMap);
+
         const allProducts = [...masterProducts, ...groups];
         const stockMap = {}, barcodeMap = {};
         let matched = 0, unmatched = 0;
@@ -1101,7 +1116,10 @@ function App() {
     reader.readAsBinaryString(file);
   };
 
-  // 라온팩토리 발주: 순종평상품명의 _ 뒤 스타일코드, 수량→w1 합산
+  // 라온팩토리 발주: 두 가지 포맷 지원
+  // [신규] 발주양식_라온팩토리2: 1행 헤더, O열(14)=상품코드(SKU), P열(15)=출고상품명, Q열(16)=수량
+  //   → raonSkuMap(재고양식 업로드 시 캐시)으로 SKU→바코드 변환, fallback으로 P열 스타일코드 추출
+  // [구형] 기타 포맷: 상품명 _ 뒤 스타일코드 추출
   const handleRaonOrderExcelUpload = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
@@ -1112,18 +1130,36 @@ function App() {
         const wb = XLSX.read(ev.target.result, { type: 'binary' });
         const sheet = wb.Sheets[wb.SheetNames[0]];
         const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
+        if (rows.length < 2) return alert("❌ 데이터가 없습니다.");
 
-        let nameIdx = -1, qtyIdx = -1, dataStart = 0;
-        for (let i = 0; i < Math.min(10, rows.length); i++) {
-          const row = rows[i];
-          if (!Array.isArray(row)) continue;
-          const fName = row.findIndex(c => cleanStr(c).includes('상품명') || cleanStr(c).includes('순종평'));
-          const fQty  = row.findIndex(c => cleanStr(c) === '수량');
-          if (fName !== -1 && fQty !== -1) {
-            nameIdx = fName; qtyIdx = fQty; dataStart = i + 1; break;
+        const header = rows[0];
+        // 신규 포맷 감지: 헤더 row0에 "상품코드" + "출고상품명" + "수량" 모두 있는 경우
+        const skuColIdx  = header.findIndex(c => cleanStr(c) === '상품코드');
+        const nameColIdx = header.findIndex(c => cleanStr(c).includes('출고상품명'));
+        const qtyColIdx  = header.findIndex(c => cleanStr(c) === '수량');
+        const isNewFormat = skuColIdx !== -1 && qtyColIdx !== -1;
+
+        let nameIdx, qtyIdx, dataStart, orderSkuIdx;
+        if (isNewFormat) {
+          orderSkuIdx = skuColIdx;
+          nameIdx     = nameColIdx !== -1 ? nameColIdx : 15;
+          qtyIdx      = qtyColIdx;
+          dataStart   = 1;
+        } else {
+          // 구형 포맷: 헤더행 탐색
+          orderSkuIdx = -1;
+          nameIdx = -1; qtyIdx = -1; dataStart = 0;
+          for (let i = 0; i < Math.min(10, rows.length); i++) {
+            const row = rows[i];
+            if (!Array.isArray(row)) continue;
+            const fName = row.findIndex(c => cleanStr(c).includes('상품명') || cleanStr(c).includes('순종평'));
+            const fQty  = row.findIndex(c => cleanStr(c) === '수량');
+            if (fName !== -1 && fQty !== -1) {
+              nameIdx = fName; qtyIdx = fQty; dataStart = i + 1; break;
+            }
           }
+          if (nameIdx === -1) { nameIdx = 6; qtyIdx = 7; dataStart = 1; }
         }
-        if (nameIdx === -1) { nameIdx = 6; qtyIdx = 7; dataStart = 1; }
 
         const allProducts = [...masterProducts, ...groups];
         const orderMap = {};
@@ -1132,22 +1168,39 @@ function App() {
         for (let i = dataStart; i < rows.length; i++) {
           const row = rows[i];
           if (!Array.isArray(row)) continue;
-          const nameVal = String(row[nameIdx] || '');
           const qty = Number(String(row[qtyIdx] || '0').replace(/,/g, '')) || 0;
           if (qty === 0) continue;
 
-          // _ 뒤의 스타일코드 추출: "라온래더_PE3HFURL73 [M/GREY]" → PE3HFURL73
           let bc = '';
-          const uIdx = nameVal.lastIndexOf('_');
-          if (uIdx !== -1) {
-            const after = nameVal.slice(uIdx + 1).trim();
-            const m = after.match(/^([A-Z0-9]+)/i);
-            bc = m ? cleanStr(m[1]) : '';
-          }
-          // fallback: 마지막 () 안 코드
-          if (!bc || bc.length < 4) {
-            const allM = [...nameVal.matchAll(/\(([^)]+)\)/g)];
-            bc = allM.length > 0 ? cleanStr(allM[allM.length - 1][1]) : '';
+          if (isNewFormat) {
+            // 1순위: raonSkuMap (재고양식 업로드 시 캐시된 SKU→바코드 맵)
+            const sku = cleanStr(row[orderSkuIdx]);
+            if (sku && raonSkuMap[sku]) {
+              bc = raonSkuMap[sku];
+            }
+            // 2순위: 출고상품명 _ 뒤 스타일코드 추출 fallback
+            if (!bc || bc.length < 4) {
+              const nameVal = String(row[nameIdx] || '');
+              const uIdx = nameVal.lastIndexOf('_');
+              if (uIdx !== -1) {
+                const after = nameVal.slice(uIdx + 1).trim();
+                const m = after.match(/^([A-Z0-9]+)/i);
+                bc = m ? cleanStr(m[1]) : '';
+              }
+            }
+          } else {
+            // 구형 포맷: 상품명 _ 뒤 스타일코드
+            const nameVal = String(row[nameIdx] || '');
+            const uIdx = nameVal.lastIndexOf('_');
+            if (uIdx !== -1) {
+              const after = nameVal.slice(uIdx + 1).trim();
+              const m = after.match(/^([A-Z0-9]+)/i);
+              bc = m ? cleanStr(m[1]) : '';
+            }
+            if (!bc || bc.length < 4) {
+              const allM = [...nameVal.matchAll(/\(([^)]+)\)/g)];
+              bc = allM.length > 0 ? cleanStr(allM[allM.length - 1][1]) : '';
+            }
           }
           if (!bc || bc.length < 4) { unmatched++; continue; }
 
